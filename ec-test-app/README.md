@@ -10,7 +10,6 @@ exe   - User mode CLI to call and evaluate ACPI functions to test EC interfaces
 inc   - Shared header files between test app and kernel mode driver
 kmdf  - Kernel mode driver that test app communicates with to evaluate ACPI methods
 rust  - Demo application that uses Ratatui to display GUI for demoing EC features
-uefi  - Sample EC ACPI tables for secure EC. Includes thermal and notification examples
 ```
 
 ## Environment Setup
