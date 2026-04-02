@@ -30,7 +30,9 @@ SOFTWARE.
 #define EXTERN_C
 #endif
 
-#define ECLIB_API EXTERN_C __declspec(dllexport)
+#ifndef ECLIB_API
+    #define ECLIB_API EXTERN_C
+#endif
 
 ECLIB_API int GetKMDFDriverHandle(
     _In_ DWORD flags,
