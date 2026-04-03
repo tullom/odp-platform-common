@@ -44,7 +44,7 @@ extern "C" {
     #include "..\inc\eclib.h"
 }
 
-#define EC_TEST_NOTIFICATIONS
+//#define EC_TEST_NOTIFICATIONS
 //#define EC_TEST_SHARED_BUFFER
 
 #define ACPI_OUTPUT_BUFFER_SIZE 1024
@@ -419,6 +419,8 @@ main(
 
     HANDLE hThread = NULL;
     int status = ERROR_SUCCESS;
+
+    printf("EC Test App Starting...\n");
 
     // Keep only one instance of the application running
     // This makes the App & Driver simple by not allowing multiple instances

@@ -1,16 +1,111 @@
-use crate::{RtcSource, Source, Threshold, common};
+use crate::{common, RtcSource, Source, Threshold};
 use battery_service_messages::{
-    BatteryState, BixFixedStrings, BstReturn, bat_swap_try_from_u32, bat_tech_try_from_u32, power_unit_try_from_u32,
+    bat_swap_try_from_u32, bat_tech_try_from_u32, power_unit_try_from_u32, BatteryState, BixFixedStrings, BstReturn,
 };
-use color_eyre::{Result, eyre::eyre};
+use color_eyre::{eyre::eyre, Result};
+use scopeguard::defer;
 use std::ffi;
 use time_alarm_service_messages::{
     AcpiTimerId, AcpiTimestamp, AlarmExpiredWakePolicy, AlarmTimerSeconds, TimeAlarmDeviceCapabilities, TimerStatus,
 };
+use windows::core::{GUID, PCWSTR};
+use windows::Win32::Devices::DeviceAndDriverInstallation::*;
+use windows::Win32::Devices::Properties::DEVPROPTYPE;
+use windows::Win32::Devices::Properties::*;
+use windows::Win32::Foundation::*;
+use windows::Win32::System::IO::*;
 
-// This module maps the data returned from call into the C-Library to RUST structures
-unsafe extern "C" {
-    fn EvaluateAcpi(input: *const i8, input_len: usize, buffer: *mut u8, buf_len: &mut usize) -> i32;
+// GUID defined in the KMDF INX file for ectest.sys
+// {5362ad97-ddfe-429d-9305-31c0ad27880a}
+const GUID_DEVCLASS_ECTEST: GUID = GUID::from_values(
+    0x5362ad97,
+    0xddfe,
+    0x429d,
+    [0x93, 0x05, 0x31, 0xc0, 0xad, 0x27, 0x88, 0x0a],
+);
+const IOCTL_ACPI_EVAL_METHOD_EX: u32 = 0x0032C010; // CTL_CODE(FILE_DEVICE_ACPI, 4, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+
+fn get_device_path() -> Result<String, AcpiParseError> {
+    let device_info_set = unsafe {
+        SetupDiGetClassDevsW(
+            Some(&GUID_DEVCLASS_ECTEST),
+            PCWSTR::null(),
+            HWND::default(),
+            DIGCF_PRESENT,
+        )
+    }
+    .map_err(|e| AcpiParseError::EvaluationFailed(e.code().0 as i32))?;
+
+    // Ensure the device info list is always cleaned up when we exit this function.
+    defer! {
+        let _ = unsafe { SetupDiDestroyDeviceInfoList(device_info_set) };
+    }
+
+    let mut device_info_data = SP_DEVINFO_DATA {
+        cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
+        ..Default::default()
+    };
+
+    let mut device_index = 0;
+    loop {
+        if unsafe { SetupDiEnumDeviceInfo(device_info_set, device_index, &mut device_info_data) }.is_err() {
+            break;
+        }
+
+        let mut property_buffer = [0u16; 128];
+        let mut required_size = 0u32;
+        let mut property_type = DEVPROPTYPE(0);
+
+        let success = unsafe {
+            SetupDiGetDevicePropertyW(
+                device_info_set,
+                &device_info_data,
+                &DEVPKEY_Device_InstanceId,
+                &mut property_type as *mut DEVPROPTYPE,
+                Some(std::slice::from_raw_parts_mut(
+                    property_buffer.as_mut_ptr() as *mut u8,
+                    property_buffer.len() * 2,
+                )),
+                Some(&mut required_size),
+                (property_buffer.len() * 2) as u32,
+            )
+        };
+
+        if success.is_ok() && required_size > 0 {
+            let instance_id =
+                String::from_utf16_lossy(&property_buffer[..(required_size as usize / 2).saturating_sub(1)]);
+            if instance_id.contains("ETST0001") {
+                let mut pdo_name_buffer = [0u16; 128];
+                let mut pdo_required_size = 0u32;
+                let mut pdo_property_type = DEVPROPTYPE(0);
+                let success = unsafe {
+                    SetupDiGetDevicePropertyW(
+                        device_info_set,
+                        &device_info_data,
+                        &DEVPKEY_Device_PDOName,
+                        &mut pdo_property_type as *mut DEVPROPTYPE,
+                        Some(std::slice::from_raw_parts_mut(
+                            pdo_name_buffer.as_mut_ptr() as *mut u8,
+                            pdo_name_buffer.len() * 2,
+                        )),
+                        Some(&mut pdo_required_size),
+                        (pdo_name_buffer.len() * 2) as u32,
+                    )
+                };
+
+                if success.is_ok() && pdo_required_size > 0 {
+                    let pdo_name = String::from_utf16_lossy(
+                        &pdo_name_buffer[..(pdo_required_size as usize / 2).saturating_sub(1)],
+                    );
+                    let path = format!("\\\\.\\GLOBALROOT{}", pdo_name);
+                    return Ok(path);
+                }
+            }
+        }
+        device_index += 1;
+    }
+
+    Err(AcpiParseError::EvaluationFailed(-1)) // Device not found
 }
 
 #[derive(num_enum::IntoPrimitive, num_enum::TryFromPrimitive, Debug, Copy, Clone)]
@@ -24,25 +119,15 @@ enum AcpiArgumentType {
     PackageEx = 0x4,
 }
 
-const ERROR_SUCCESS: i32 = 0;
-
 mod guid {
     pub const _SENSOR_CRT_TEMP: uuid::Uuid = uuid::uuid!("218246e7-baf6-45f1-aa13-07e4845256b8");
     pub const _SENSOR_PROCHOT_TEMP: uuid::Uuid = uuid::uuid!("22dc52d2-fd0b-47ab-95b8-26552f9831a5");
-    pub const FAN_ON_TEMP: uuid::Uuid = uuid::uuid!("ba17b567-c368-48d5-bc6f-a312a41583c1");
-    pub const FAN_RAMP_TEMP: uuid::Uuid = uuid::uuid!("3a62688c-d95b-4d2d-bacc-90d7a5816bcd");
-    pub const FAN_MAX_TEMP: uuid::Uuid = uuid::uuid!("dcb758b1-f0fd-4ec7-b2c0-ef1e2a547b76");
-    pub const FAN_MIN_RPM: uuid::Uuid = uuid::uuid!("db261c77-934b-45e2-9742-256c62badb7a");
-    pub const FAN_MAX_RPM: uuid::Uuid = uuid::uuid!("5cf839df-8be7-42b9-9ac5-3403ca2c8a6a");
-    pub const FAN_CURRENT_RPM: uuid::Uuid = uuid::uuid!("adf95492-0776-4ffc-84f3-b6c8b5269683");
-}
-
-fn cstr_bytes_to_string(raw: &[u8]) -> Result<String> {
-    Ok(ffi::CStr::from_bytes_until_nul(raw)
-        .map_err(|_| color_eyre::eyre::eyre!("Invalid byte slice"))?
-        .to_str()
-        .map_err(|_| color_eyre::eyre::eyre!("String contains invalid characters"))?
-        .to_owned())
+    pub const _FAN_ON_TEMP: uuid::Uuid = uuid::uuid!("ba17b567-c368-48d5-bc6f-a312a41583c1");
+    pub const _FAN_RAMP_TEMP: uuid::Uuid = uuid::uuid!("3a62688c-d95b-4d2d-bacc-90d7a5816bcd");
+    pub const _FAN_MAX_TEMP: uuid::Uuid = uuid::uuid!("dcb758b1-f0fd-4ec7-b2c0-ef1e2a547b76");
+    pub const _FAN_MIN_RPM: uuid::Uuid = uuid::uuid!("db261c77-934b-45e2-9742-256c62badb7a");
+    pub const _FAN_MAX_RPM: uuid::Uuid = uuid::uuid!("5cf839df-8be7-42b9-9ac5-3403ca2c8a6a");
+    pub const _FAN_CURRENT_RPM: uuid::Uuid = uuid::uuid!("adf95492-0776-4ffc-84f3-b6c8b5269683");
 }
 
 // A user-friendly ACPI input method containing a name and optional arguments
@@ -254,24 +339,61 @@ impl Acpi {
 
         // Input buffer
         let in_buf: Vec<u8> = input.into();
-        let in_buf_len = in_buf.len();
 
         // Output buffer
-        let mut out_buf_len = 1024;
+        let out_buf_len = 1024;
         let mut out_buf = vec![0u8; out_buf_len];
 
-        let res = unsafe {
-            EvaluateAcpi(
-                in_buf.as_ptr() as *const i8,
-                in_buf_len,
-                out_buf.as_mut_ptr(),
-                &mut out_buf_len,
+        // Get device path
+        let device_path = get_device_path()?;
+
+        // Open device
+        let device_path_wide: Vec<u16> = device_path.encode_utf16().chain(std::iter::once(0)).collect();
+        let h_device = unsafe {
+            windows::Win32::Storage::FileSystem::CreateFileW(
+                PCWSTR::from_raw(device_path_wide.as_ptr()),
+                windows::Win32::Storage::FileSystem::FILE_GENERIC_READ.0
+                    | windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE.0,
+                windows::Win32::Storage::FileSystem::FILE_SHARE_READ
+                    | windows::Win32::Storage::FileSystem::FILE_SHARE_WRITE,
+                None,
+                windows::Win32::Storage::FileSystem::OPEN_EXISTING,
+                windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL,
+                windows::Win32::Foundation::INVALID_HANDLE_VALUE,
+            )
+        }
+        .map_err(|e| AcpiParseError::EvaluationFailed(e.code().0 as i32))?;
+
+        if h_device.is_invalid() {
+            return Err(AcpiParseError::EvaluationFailed(-2));
+        }
+
+        defer! {
+            let _ = unsafe { CloseHandle(h_device) };
+        }
+
+        // Call DeviceIoControl
+        let mut bytes_returned = 0u32;
+        let success = unsafe {
+            DeviceIoControl(
+                h_device,
+                IOCTL_ACPI_EVAL_METHOD_EX,
+                Some(in_buf.as_ptr() as *const std::ffi::c_void),
+                in_buf.len() as u32,
+                Some(out_buf.as_mut_ptr() as *mut std::ffi::c_void),
+                out_buf_len as u32,
+                Some(&mut bytes_returned),
+                None,
             )
         };
 
-        match res {
-            ERROR_SUCCESS => AcpiEvalOutputBufferV1::try_from(out_buf),
-            err => Err(AcpiParseError::EvaluationFailed(err)),
+        match success {
+            Ok(_) => {
+                // Adjust out_buf_len to actual bytes returned
+                out_buf.truncate(bytes_returned as usize);
+                AcpiEvalOutputBufferV1::try_from(out_buf)
+            }
+            Err(e) => Err(AcpiParseError::EvaluationFailed(e.code().0 as i32)),
         }
     }
 
