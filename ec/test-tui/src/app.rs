@@ -86,10 +86,15 @@ impl<S: Source + Clone + 'static> App<S> {
         );
         modules.insert(SelectedTab::TabRTC, Box::new(Rtc::new(rtc_source.borrow().clone())));
         modules.insert(SelectedTab::TabUCSI, Box::new(Ucsi::new()));
-        modules.insert(
-            SelectedTab::TabBattery,
-            Box::new(Battery::new(battery_source.borrow().clone())),
-        );
+
+        let battery = {
+            #[cfg(feature = "mock")]
+            let interval = std::time::Duration::from_secs(1);
+            #[cfg(not(feature = "mock"))]
+            let interval = std::time::Duration::from_secs(60);
+            Battery::new(battery_source.borrow().clone()).with_graph_sample_interval(interval)
+        };
+        modules.insert(SelectedTab::TabBattery, Box::new(battery));
 
         Self {
             state: Default::default(),

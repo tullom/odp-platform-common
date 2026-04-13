@@ -6,6 +6,7 @@ use battery_service_messages::{
 };
 use core::ffi::CStr;
 use ec_test_lib::BatterySource;
+use std::time::{Duration, Instant};
 
 use ratatui::style::Modifier;
 use ratatui::text::Text;
@@ -93,14 +94,16 @@ impl Default for BatteryTabState {
     }
 }
 
-#[derive(Default)]
 pub struct Battery<S: BatterySource> {
     bst_data: BstReturn,
     bix_data: BixFixedStrings,
     state: BatteryTabState,
-    t_sec: usize,
     t_min: usize,
     source: S,
+    /// How often to push a new point onto the capacity graph.
+    graph_sample_interval: Duration,
+    /// When the last graph sample was taken; `None` means "take one immediately".
+    last_graph_update: Option<Instant>,
 }
 
 impl<S: BatterySource> Module for Battery<S> {
@@ -116,14 +119,13 @@ impl<S: BatterySource> Module for Battery<S> {
             self.state.bst_success = false;
         }
 
-        // In mock demo, update graph every second, but real-life update every minute
-        #[cfg(feature = "mock")]
-        let update_graph = true;
-        #[cfg(not(feature = "mock"))]
-        let update_graph = self.t_sec.is_multiple_of(60);
+        let now = Instant::now();
+        let update_graph = self
+            .last_graph_update
+            .map_or(true, |t| now.duration_since(t) >= self.graph_sample_interval);
 
-        self.t_sec += 1;
         if update_graph {
+            self.last_graph_update = Some(now);
             self.state.samples.insert(self.bst_data.battery_remaining_capacity);
             self.t_min += 1;
         }
@@ -160,9 +162,10 @@ impl<S: BatterySource> Battery<S> {
             bst_data: Default::default(),
             bix_data: Default::default(),
             state: Default::default(),
-            t_sec: Default::default(),
             t_min: Default::default(),
             source,
+            graph_sample_interval: Duration::from_secs(1),
+            last_graph_update: None,
         };
 
         // This shouldn't change because BIX info is static so just read once
@@ -175,6 +178,14 @@ impl<S: BatterySource> Battery<S> {
 
         inst.update();
         inst
+    }
+
+    /// Set how often the capacity graph is updated. Defaults to 1 second.
+    pub fn with_graph_sample_interval(self, interval: Duration) -> Self {
+        Self {
+            graph_sample_interval: interval,
+            ..self
+        }
     }
 
     fn render_info(&self, area: Rect, buf: &mut Buffer) {
