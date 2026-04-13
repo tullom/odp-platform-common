@@ -19,9 +19,8 @@ use ratatui::{
 
 use std::marker::PhantomData;
 use std::{
-    cell::RefCell,
     collections::BTreeMap,
-    rc::Rc,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -70,21 +69,17 @@ pub struct App<S: Source> {
     phantom: PhantomData<S>,
 }
 
-impl<S: Source + Clone + 'static> App<S> {
+impl<S: Source + 'static> App<S> {
     /// Construct a new instance of [`App`].
     pub fn new(source: S) -> Self {
         let mut modules: BTreeMap<SelectedTab, Box<dyn Module>> = BTreeMap::new();
-        let source = Rc::new(RefCell::new(source));
-
-        let thermal_source = Rc::clone(&source);
-        let battery_source = Rc::clone(&source);
-        let rtc_source = Rc::clone(&source);
+        let source = Arc::new(source);
 
         modules.insert(
             SelectedTab::TabThermal,
-            Box::new(Thermal::new(thermal_source.borrow().clone())),
+            Box::new(Thermal::new(Arc::clone(&source))),
         );
-        modules.insert(SelectedTab::TabRTC, Box::new(Rtc::new(rtc_source.borrow().clone())));
+        modules.insert(SelectedTab::TabRTC, Box::new(Rtc::new(Arc::clone(&source))));
         modules.insert(SelectedTab::TabUCSI, Box::new(Ucsi::new()));
 
         let battery = {
@@ -92,7 +87,7 @@ impl<S: Source + Clone + 'static> App<S> {
             let interval = std::time::Duration::from_secs(1);
             #[cfg(not(feature = "mock"))]
             let interval = std::time::Duration::from_secs(60);
-            Battery::new(battery_source.borrow().clone()).with_graph_sample_interval(interval)
+            Battery::new(Arc::clone(&source)).with_graph_sample_interval(interval)
         };
         modules.insert(SelectedTab::TabBattery, Box::new(battery));
 

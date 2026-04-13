@@ -6,6 +6,7 @@ use battery_service_messages::{
 };
 use core::ffi::CStr;
 use ec_test_lib::BatterySource;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ratatui::style::Modifier;
@@ -99,7 +100,7 @@ pub struct Battery<S: BatterySource> {
     bix_data: BixFixedStrings,
     state: BatteryTabState,
     t_min: usize,
-    source: S,
+    source: Arc<S>,
     /// How often to push a new point onto the capacity graph.
     graph_sample_interval: Duration,
     /// When the last graph sample was taken; `None` means "take one immediately".
@@ -157,7 +158,7 @@ impl<S: BatterySource> Module for Battery<S> {
 }
 
 impl<S: BatterySource> Battery<S> {
-    pub fn new(source: S) -> Self {
+    pub fn new(source: Arc<S>) -> Self {
         let mut inst = Self {
             bst_data: Default::default(),
             bix_data: Default::default(),

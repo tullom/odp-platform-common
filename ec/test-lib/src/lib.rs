@@ -161,6 +161,37 @@ pub trait RtcSource: ErrorType {
 pub trait Source: Clone + ThermalSource + BatterySource + RtcSource {}
 impl<T: Clone + ThermalSource + BatterySource + RtcSource> Source for T {}
 
+// Blanket impls so that Arc<S> can be used anywhere a source trait is required.
+// This lets modules share one source instance via Arc instead of each owning a clone.
+use std::sync::Arc;
+
+impl<T: ErrorType> ErrorType for Arc<T> {
+    type Error = T::Error;
+}
+
+impl<T: ThermalSource> ThermalSource for Arc<T> {
+    fn get_temperature(&self) -> Result<f64, Self::Error> { (**self).get_temperature() }
+    fn get_rpm(&self) -> Result<f64, Self::Error> { (**self).get_rpm() }
+    fn get_min_rpm(&self) -> Result<f64, Self::Error> { (**self).get_min_rpm() }
+    fn get_max_rpm(&self) -> Result<f64, Self::Error> { (**self).get_max_rpm() }
+    fn get_threshold(&self, threshold: Threshold) -> Result<f64, Self::Error> { (**self).get_threshold(threshold) }
+    fn set_rpm(&self, rpm: f64) -> Result<(), Self::Error> { (**self).set_rpm(rpm) }
+}
+
+impl<T: BatterySource> BatterySource for Arc<T> {
+    fn get_bst(&self) -> Result<BstReturn, Self::Error> { (**self).get_bst() }
+    fn get_bix(&self) -> Result<BixFixedStrings, Self::Error> { (**self).get_bix() }
+    fn set_btp(&self, trippoint: u32) -> Result<(), Self::Error> { (**self).set_btp(trippoint) }
+}
+
+impl<T: RtcSource> RtcSource for Arc<T> {
+    fn get_capabilities(&self) -> Result<TimeAlarmDeviceCapabilities, Self::Error> { (**self).get_capabilities() }
+    fn get_real_time(&self) -> Result<AcpiTimestamp, Self::Error> { (**self).get_real_time() }
+    fn get_wake_status(&self, timer_id: AcpiTimerId) -> Result<TimerStatus, Self::Error> { (**self).get_wake_status(timer_id) }
+    fn get_expired_timer_wake_policy(&self, timer_id: AcpiTimerId) -> Result<AlarmExpiredWakePolicy, Self::Error> { (**self).get_expired_timer_wake_policy(timer_id) }
+    fn get_timer_value(&self, timer_id: AcpiTimerId) -> Result<AlarmTimerSeconds, Self::Error> { (**self).get_timer_value(timer_id) }
+}
+
 /// Fan threshold type
 pub enum Threshold {
     /// On threshold temperature

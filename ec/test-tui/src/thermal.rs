@@ -10,6 +10,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Gauge, Paragraph, Widget},
 };
+use std::sync::Arc;
 use tui_input::{Input, backend::crossterm::EventHandler};
 
 const LABEL_COLOR: Color = tailwind::SLATE.c200;
@@ -131,7 +132,7 @@ pub struct Thermal<S: ThermalSource> {
     sensor: SensorState,
     fan: FanState,
     t: usize,
-    source: S,
+    source: Arc<S>,
 }
 
 impl<S: ThermalSource> Module for Thermal<S> {
@@ -166,7 +167,7 @@ impl<S: ThermalSource> Module for Thermal<S> {
 }
 
 impl<S: ThermalSource> Thermal<S> {
-    pub fn new(source: S) -> Self {
+    pub fn new(source: Arc<S>) -> Self {
         let mut inst = Self {
             rpm_input: Default::default(),
             sensor: Default::default(),

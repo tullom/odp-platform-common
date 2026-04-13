@@ -7,6 +7,7 @@ use ratatui::{
     style::{Color, palette::tailwind},
     widgets::Paragraph,
 };
+use std::sync::Arc;
 use time_alarm_service_messages::{
     AcpiDaylightSavingsTimeStatus, AcpiTimeZone, AcpiTimerId, AcpiTimestamp, AlarmExpiredWakePolicy, AlarmTimerSeconds,
     TimeAlarmDeviceCapabilities, TimerStatus,
@@ -94,7 +95,7 @@ mod rtc_timer {
 use rtc_timer::RtcTimer;
 
 pub struct Rtc<S: RtcSource> {
-    source: S,
+    source: Arc<S>,
     timers: [RtcTimer; 2],
 
     capabilities: Result<TimeAlarmDeviceCapabilities>,
@@ -238,7 +239,7 @@ fn format_time_zone(tz: AcpiTimeZone) -> String {
 }
 
 impl<S: RtcSource> Rtc<S> {
-    pub fn new(source: S) -> Self {
+    pub fn new(source: Arc<S>) -> Self {
         let mut result = Self {
             source,
             capabilities: Err(color_eyre::eyre::eyre!(DATA_NOT_YET_RETRIEVED_MSG)),
