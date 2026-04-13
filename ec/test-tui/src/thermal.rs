@@ -16,14 +16,14 @@ use tui_input::{Input, backend::crossterm::EventHandler};
 const LABEL_COLOR: Color = tailwind::SLATE.c200;
 const MAX_SAMPLES: usize = 60;
 
-// Always return mock data for thresholds until sensor GET/SET VAR and GET/SET THRS supported
-fn get_sensor_thresholds<S: ThermalSource>(_source: &S) -> Result<SensorThresholds> {
-    Ok(SensorThresholds {
-        _warn_low: 13.0,
+// TODO: Implement using source once GET/SET VAR and GET/SET THRS commands are supported.
+fn get_sensor_thresholds() -> SensorThresholds {
+    SensorThresholds {
+        warn_low: 13.0,
         warn_high: 35.0,
         prochot: 40.0,
         critical: 45.0,
-    })
+    }
 }
 
 fn get_fan_bounds<S: ThermalSource>(source: &S) -> Result<FanRpmBounds> {
@@ -43,7 +43,8 @@ fn get_fan_levels<S: ThermalSource>(source: &S) -> Result<FanStateLevels> {
 
 #[derive(Default)]
 struct SensorThresholds {
-    pub _warn_low: f64,
+    #[allow(dead_code)] // reserved for future low-threshold enforcement
+    pub warn_low: f64,
     pub warn_high: f64,
     pub prochot: f64,
     pub critical: f64,
@@ -68,12 +69,8 @@ impl SensorState {
             self.temp_success = false;
         }
 
-        if let Ok(thresholds) = get_sensor_thresholds(source) {
-            self.thresholds = thresholds;
-            self.thresholds_success = true;
-        } else {
-            self.thresholds_success = false;
-        }
+        self.thresholds = get_sensor_thresholds();
+        self.thresholds_success = true;
     }
 }
 
@@ -336,23 +333,10 @@ impl<S: ThermalSource> Thermal<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ec_test_lib::{Error as EcError, ErrorKind, ErrorType, Threshold};
+    use crate::common::test_support::TestError;
+    use ec_test_lib::{ErrorType, Threshold};
 
-    // ── minimal test doubles ─────────────────────────────────────────────────
-
-    #[derive(Debug)]
-    struct TestError;
-    impl std::fmt::Display for TestError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "test error")
-        }
-    }
-    impl std::error::Error for TestError {}
-    impl EcError for TestError {
-        fn kind(&self) -> ErrorKind {
-            ErrorKind::Other
-        }
-    }
+    // ── test doubles ─────────────────────────────────────────────────────────
 
     struct OkThermal;
     impl ErrorType for OkThermal {
@@ -416,7 +400,7 @@ mod tests {
         state.update(&OkThermal);
         assert!(state.temp_success);
         assert_eq!(state.skin_temp, 25.5);
-        // get_sensor_thresholds always succeeds (hardcoded values, ignores source)
+        // get_sensor_thresholds returns hardcoded values; always succeeds
         assert!(state.thresholds_success);
         assert_eq!(state.thresholds.warn_high, 35.0);
     }

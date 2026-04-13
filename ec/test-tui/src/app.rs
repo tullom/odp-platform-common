@@ -30,7 +30,11 @@ pub(crate) trait Module {
     /// The module's title.
     fn title(&self) -> &'static str;
 
-    /// Update the module.
+    /// Poll the data source and refresh internal state.
+    ///
+    /// Returns `()` intentionally: each module tracks failures via internal
+    /// success flags so the UI can display error states rather than crashing.
+    /// If a future need arises, this signature could change to `Result<()>`.
     fn update(&mut self);
 
     /// Handle input event.

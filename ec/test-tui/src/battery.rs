@@ -75,6 +75,7 @@ fn swap_cap_as_str(swap_cap: BatterySwapCapability) -> &'static str {
 
 /// All polled battery data in one place. Fields are public within the crate
 /// so tests can inspect state without going through the full module machinery.
+#[derive(Default)]
 struct BatteryData {
     pub bst: BstReturn,
     pub bst_success: bool,
@@ -82,19 +83,6 @@ struct BatteryData {
     pub bix_success: bool,
     pub samples: common::SampleBuf<u32, MAX_SAMPLES>,
     pub t_min: usize,
-}
-
-impl Default for BatteryData {
-    fn default() -> Self {
-        Self {
-            bst: Default::default(),
-            bst_success: false,
-            bix: Default::default(),
-            bix_success: false,
-            samples: Default::default(),
-            t_min: 0,
-        }
-    }
 }
 
 /// Fetch the latest BST reading into `data`. Isolated so it can be called
@@ -144,7 +132,7 @@ impl<S: BatterySource> Module for Battery<S> {
         let now = Instant::now();
         let update_graph = self
             .last_graph_update
-            .map_or(true, |t| now.duration_since(t) >= self.graph_sample_interval);
+            .is_none_or(|t| now.duration_since(t) >= self.graph_sample_interval);
 
         if update_graph {
             self.last_graph_update = Some(now);
@@ -308,7 +296,7 @@ impl<S: BatterySource> Battery<S> {
                 format!("{} ms", self.data.bix.max_sampling_time).into(),
             ]),
             Row::new(vec![
-                Text::raw("Mix Sample Time").add_modifier(Modifier::BOLD),
+                Text::raw("Min Sample Time").add_modifier(Modifier::BOLD),
                 format!("{} ms", self.data.bix.min_sampling_time).into(),
             ]),
             Row::new(vec![
@@ -454,23 +442,10 @@ impl<S: BatterySource> Battery<S> {
 mod tests {
     use super::*;
     use battery_service_messages::{BatterySwapCapability, BatteryTechnology, PowerUnit};
-    use ec_test_lib::{BatterySource, Error as EcError, ErrorKind, ErrorType};
+    use crate::common::test_support::TestError;
+    use ec_test_lib::{BatterySource, ErrorType};
 
-    // ── minimal test doubles ─────────────────────────────────────────────────
-
-    #[derive(Debug)]
-    struct TestError;
-    impl std::fmt::Display for TestError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "test error")
-        }
-    }
-    impl std::error::Error for TestError {}
-    impl EcError for TestError {
-        fn kind(&self) -> ErrorKind {
-            ErrorKind::Other
-        }
-    }
+    // ── test doubles ─────────────────────────────────────────────────────────
 
     struct OkSource;
     impl ErrorType for OkSource {

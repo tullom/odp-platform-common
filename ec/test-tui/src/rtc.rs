@@ -17,14 +17,17 @@ use ec_test_lib::RtcSource;
 
 const LABEL_COLOR: Color = tailwind::SLATE.c200;
 
+/// `None` = not yet fetched, `Some(Ok(v))` = success, `Some(Err(e))` = fetch failed.
+pub(crate) type Fetched<T> = Option<color_eyre::Result<T>>;
+
 mod rtc_timer {
     use super::*;
     pub struct RtcTimer {
         timer_id: AcpiTimerId,
 
-        value: Option<color_eyre::Result<AlarmTimerSeconds>>,
-        wake_policy: Option<color_eyre::Result<AlarmExpiredWakePolicy>>,
-        timer_status: Option<color_eyre::Result<TimerStatus>>,
+        value: Fetched<AlarmTimerSeconds>,
+        wake_policy: Fetched<AlarmExpiredWakePolicy>,
+        timer_status: Fetched<TimerStatus>,
     }
 
     impl RtcTimer {
@@ -94,7 +97,7 @@ mod rtc_timer {
 
     fn format_option_result<T>(
         label: &str,
-        opt: &Option<color_eyre::Result<T>>,
+        opt: &Fetched<T>,
         f: impl FnOnce(&T) -> String,
     ) -> String {
         match opt {
@@ -111,8 +114,8 @@ pub struct Rtc<S: RtcSource> {
     source: Arc<S>,
     timers: [RtcTimer; 2],
 
-    capabilities: Option<color_eyre::Result<TimeAlarmDeviceCapabilities>>,
-    timestamp: Option<color_eyre::Result<AcpiTimestamp>>,
+    capabilities: Fetched<TimeAlarmDeviceCapabilities>,
+    timestamp: Fetched<AcpiTimestamp>,
 }
 
 impl<S: RtcSource> Module for Rtc<S> {
