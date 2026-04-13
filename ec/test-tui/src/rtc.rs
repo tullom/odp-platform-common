@@ -255,3 +255,110 @@ impl<S: RtcSource> Rtc<S> {
         &self.timers[timer_id as usize]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use embedded_mcu_hal::time::{Month, UncheckedDatetime};
+    use time_alarm_service_messages::AcpiTimeZoneOffset;
+
+    fn make_datetime(year: u16, month: Month, day: u8, hour: u8, min: u8, sec: u8) -> Datetime {
+        Datetime::new(UncheckedDatetime {
+            year,
+            month,
+            day,
+            hour,
+            minute: min,
+            second: sec,
+            ..Default::default()
+        })
+        .expect("valid datetime")
+    }
+
+    // ── format_time ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn format_time_produces_iso_like_string() {
+        let dt = make_datetime(2024, Month::March, 15, 10, 30, 45);
+        assert_eq!(format_time(dt), "2024-03-15 10:30:45");
+    }
+
+    #[test]
+    fn format_time_pads_single_digit_fields() {
+        let dt = make_datetime(2000, Month::January, 1, 0, 0, 0);
+        assert_eq!(format_time(dt), "2000-01-01 00:00:00");
+    }
+
+    // ── format_time_zone ─────────────────────────────────────────────────────
+
+    #[test]
+    fn format_time_zone_unknown() {
+        assert_eq!(format_time_zone(AcpiTimeZone::Unknown), "Unknown");
+    }
+
+    #[test]
+    fn format_time_zone_negative_offset() {
+        let offset = AcpiTimeZoneOffset::new(-8 * 60).expect("valid offset");
+        assert_eq!(
+            format_time_zone(AcpiTimeZone::MinutesFromUtc(offset)),
+            "UTC-08:00"
+        );
+    }
+
+    #[test]
+    fn format_time_zone_positive_half_hour_offset() {
+        let offset = AcpiTimeZoneOffset::new(5 * 60 + 30).expect("valid offset");
+        assert_eq!(
+            format_time_zone(AcpiTimeZone::MinutesFromUtc(offset)),
+            "UTC+05:30"
+        );
+    }
+
+    // ── format_dst ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn format_dst_not_observed() {
+        assert_eq!(
+            format_dst(AcpiDaylightSavingsTimeStatus::NotObserved),
+            "Not Observed"
+        );
+    }
+
+    #[test]
+    fn format_dst_not_adjusted() {
+        assert_eq!(format_dst(AcpiDaylightSavingsTimeStatus::NotAdjusted), "No");
+    }
+
+    #[test]
+    fn format_dst_adjusted() {
+        assert_eq!(format_dst(AcpiDaylightSavingsTimeStatus::Adjusted), "Yes");
+    }
+
+    // ── format_capabilities ──────────────────────────────────────────────────
+
+    #[test]
+    fn format_capabilities_has_correct_entry_count() {
+        let caps = TimeAlarmDeviceCapabilities(0);
+        let lines = format_capabilities(&caps);
+        // Header + 9 capability entries.
+        assert_eq!(lines.len(), 10);
+    }
+
+    #[test]
+    fn format_capabilities_all_not_supported_when_zero() {
+        let caps = TimeAlarmDeviceCapabilities(0);
+        let lines = format_capabilities(&caps);
+        // The accuracy entry (index 3) uses "Seconds"/"Milliseconds" — skip it.
+        // All other data entries should say "Not Supported".
+        for (i, line) in lines[1..].iter().enumerate() {
+            if line.contains("Accuracy") {
+                assert!(line.contains("Seconds"), "accuracy line unexpected: {line}");
+            } else {
+                assert!(
+                    line.contains("Not Supported"),
+                    "entry {i}: expected 'Not Supported' in: {line}"
+                );
+            }
+        }
+    }
+}
