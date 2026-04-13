@@ -29,6 +29,11 @@ struct Cli {
     /// Serial baud rate.
     #[arg(long, default_value_t = 115_200)]
     baud: u32,
+
+    /// Battery graph sample period in seconds.
+    /// Defaults to 1 for mock sources and 60 for real hardware.
+    #[arg(long)]
+    sample_period: Option<u64>,
 }
 
 /// Available data sources (only variants whose feature is compiled in are shown).
@@ -59,16 +64,23 @@ fn main() -> color_eyre::Result<()> {
     let terminal = ratatui::init();
 
     match cli.source {
-        SourceKind::Mock => app::App::new(ec_test_lib::mock::Mock::default(), Duration::from_secs(1)).run(terminal),
+        SourceKind::Mock => {
+            let period = Duration::from_secs(cli.sample_period.unwrap_or(1));
+            app::App::new(ec_test_lib::mock::Mock::default(), period).run(terminal)
+        }
 
         SourceKind::Serial => {
             let port = cli.port.expect("--port is required for --source serial");
             let hw_flow = matches!(cli.flow_control, FlowControl::Hardware);
             let source = ec_test_lib::serial::Serial::new(&port, cli.baud, hw_flow)?;
-            app::App::new(source, Duration::from_secs(60)).run(terminal)
+            let period = Duration::from_secs(cli.sample_period.unwrap_or(60));
+            app::App::new(source, period).run(terminal)
         }
 
         #[cfg(feature = "acpi")]
-        SourceKind::Acpi => app::App::new(ec_test_lib::acpi::Acpi::default(), Duration::from_secs(60)).run(terminal),
+        SourceKind::Acpi => {
+            let period = Duration::from_secs(cli.sample_period.unwrap_or(60));
+            app::App::new(ec_test_lib::acpi::Acpi::default(), period).run(terminal)
+        }
     }
 }
