@@ -21,7 +21,7 @@ const GUID_DEVCLASS_ECTEST: GUID = GUID::from_values(
     0x429d,
     [0x93, 0x05, 0x31, 0xc0, 0xad, 0x27, 0x88, 0x0a],
 );
-const IOCTL_ACPI_EVAL_METHOD_EX: u32 = 0x0032C010; // CTL_CODE(FILE_DEVICE_ACPI, 4, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+const IOCTL_ACPI_EVAL_METHOD_EX: u32 = 0x0032C018; // CTL_CODE(FILE_DEVICE_ACPI, 4, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
 
 fn get_device_path() -> Result<String, AcpiParseError> {
     let device_info_set = unsafe {
@@ -65,7 +65,7 @@ fn get_device_path() -> Result<String, AcpiParseError> {
                     property_buffer.len() * 2,
                 )),
                 Some(&mut required_size),
-                (property_buffer.len() * 2) as u32,
+                0,
             )
         };
 
@@ -87,7 +87,7 @@ fn get_device_path() -> Result<String, AcpiParseError> {
                             pdo_name_buffer.len() * 2,
                         )),
                         Some(&mut pdo_required_size),
-                        (pdo_name_buffer.len() * 2) as u32,
+                        0,
                     )
                 };
 
@@ -379,14 +379,13 @@ impl Acpi {
         let h_device = unsafe {
             windows::Win32::Storage::FileSystem::CreateFileW(
                 PCWSTR::from_raw(device_path_wide.as_ptr()),
-                windows::Win32::Storage::FileSystem::FILE_GENERIC_READ.0
-                    | windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE.0,
+                (GENERIC_READ | GENERIC_WRITE).0,
                 windows::Win32::Storage::FileSystem::FILE_SHARE_READ
                     | windows::Win32::Storage::FileSystem::FILE_SHARE_WRITE,
                 None,
                 windows::Win32::Storage::FileSystem::OPEN_EXISTING,
-                windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL,
-                windows::Win32::Foundation::INVALID_HANDLE_VALUE,
+                windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(0),
+                None,
             )
         }
         .map_err(|e| AcpiParseError::EvaluationFailed(e.code().0))?;
