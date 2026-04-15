@@ -47,8 +47,26 @@ mod rtc_timer {
             }
         }
 
-        pub fn render(&self, title: &str, area: Rect, buf: &mut Buffer) {
-            let is_healthy = matches!(self.value, Some(Ok(_)))
+        /// One-line summary for the dashboard card.
+        pub fn summary(&self) -> String {
+            match &self.value {
+                None => "Pending...".to_string(),
+                Some(Err(_)) => "Error".to_string(),
+                Some(Ok(v)) => {
+                    let time_part = match *v {
+                        AlarmTimerSeconds::DISABLED => "Not set".to_string(),
+                        s => format!("{}s remaining", s.0),
+                    };
+                    let expired = match &self.timer_status {
+                        Some(Ok(s)) if s.timer_expired() => "  ⚠ expired",
+                        _ => "",
+                    };
+                    format!("{time_part}{expired}")
+                }
+            }
+        }
+
+        pub fn render(&self, title: &str, area: Rect, buf: &mut Buffer) {            let is_healthy = matches!(self.value, Some(Ok(_)))
                 && matches!(self.wake_policy, Some(Ok(_)))
                 && matches!(self.timer_status, Some(Ok(_)));
             let title = common::status_title(title, is_healthy);
@@ -157,27 +175,61 @@ impl<S: RtcSource> Module for Rtc<S> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let (time_str, date_str, tz_str) = match &self.timestamp {
+        use Constraint::{Length, Min};
+        let [time_area, meta_area, divider_area, timers_area] =
+            Layout::vertical([Length(2), Length(2), Length(1), Min(0)]).areas(inner);
+
+        // Time + date
+        let (time_str, date_str, tz_str, dst_str) = match &self.timestamp {
             Some(Ok(ts)) => (
                 format_time_hms(ts.datetime),
                 format_date(ts.datetime),
                 format_time_zone(ts.time_zone),
+                format!("DST: {}", format_dst(ts.dst_status)),
             ),
-            Some(Err(_)) => ("Error".into(), String::new(), String::new()),
-            None => ("Pending".into(), String::new(), String::new()),
+            Some(Err(_)) => ("Error".into(), String::new(), String::new(), String::new()),
+            None => ("Pending".into(), String::new(), String::new(), String::new()),
         };
 
         Paragraph::new(vec![
             Line::from(Span::styled(time_str, Style::default().fg(Color::White).bold())),
             Line::from(Span::styled(date_str, Style::default().fg(tailwind::VIOLET.c300))),
-            Line::from(Span::styled(tz_str, Style::default().fg(tailwind::SLATE.c500))),
         ])
-        .render(inner, buf);
+        .render(time_area, buf);
+
+        // Timezone + DST + accuracy
+        let accuracy_str = match &self.capabilities {
+            Some(Ok(caps)) => if caps.realtime_accuracy_in_milliseconds() { "ms accuracy" } else { "s accuracy" },
+            _ => "",
+        };
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(tz_str, Style::default().fg(tailwind::SLATE.c400)),
+                Span::raw("  "),
+                Span::styled(dst_str, Style::default().fg(tailwind::SLATE.c500)),
+            ]),
+            Line::from(Span::styled(accuracy_str, Style::default().fg(tailwind::SLATE.c600))),
+        ])
+        .render(meta_area, buf);
+
+        // Divider label
+        Line::from(Span::styled("─── Timers ─────────────────", Style::default().fg(tailwind::SLATE.c700)))
+            .render(divider_area, buf);
+
+        // AC and DC timer summary
+        Paragraph::new(vec![
+            timer_summary_line("AC", self.get_timer(AcpiTimerId::AcPower)),
+            timer_summary_line("DC", self.get_timer(AcpiTimerId::DcPower)),
+        ])
+        .render(timers_area, buf);
     }
 }
 
-fn format_time_hms(time: Datetime) -> String {
-    format!("{:02}:{:02}:{:02}", time.hour(), time.minute(), time.second())
+fn timer_summary_line<'a>(label: &'a str, timer: &RtcTimer) -> Line<'a> {
+    common::metric_row(label, timer.summary(), tailwind::VIOLET.c400)
+}
+
+fn format_time_hms(time: Datetime) -> String {    format!("{:02}:{:02}:{:02}", time.hour(), time.minute(), time.second())
 }
 
 fn format_date(time: Datetime) -> String {

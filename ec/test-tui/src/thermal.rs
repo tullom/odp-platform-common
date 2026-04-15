@@ -7,7 +7,7 @@ use ratatui::{
     crossterm::event::{Event, KeyCode, KeyEventKind},
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style, Stylize, palette::tailwind},
-    text::Span,
+    text::{Line, Span},
     widgets::{Block, Paragraph, Widget},
 };
 use std::sync::Arc;
@@ -136,6 +136,42 @@ fn temp_level_color(temp: f64, thresholds: &SensorThresholds) -> Color {
     }
 }
 
+fn thermal_zone(temp: f64, thresholds: &SensorThresholds) -> &'static str {
+    if temp >= thresholds.critical {
+        "Critical"
+    } else if temp >= thresholds.prochot {
+        "Prochot"
+    } else if temp >= thresholds.warn_high {
+        "Warning"
+    } else {
+        "Normal"
+    }
+}
+
+fn fan_zone(rpm: f64, levels: &FanStateLevels) -> &'static str {
+    if rpm >= levels.max {
+        "Max"
+    } else if rpm >= levels.ramping {
+        "Ramping"
+    } else if rpm >= levels.on {
+        "On"
+    } else {
+        "Off"
+    }
+}
+
+fn fan_zone_color(rpm: f64, levels: &FanStateLevels) -> Color {
+    if rpm >= levels.max {
+        tailwind::AMBER.c400
+    } else if rpm >= levels.ramping {
+        tailwind::SKY.c400
+    } else if rpm >= levels.on {
+        tailwind::GREEN.c500
+    } else {
+        tailwind::SLATE.c500
+    }
+}
+
 pub struct Thermal<S: ThermalSource> {
     rpm_input: Input,
     sensor: SensorState,
@@ -183,40 +219,90 @@ impl<S: ThermalSource> Module for Thermal<S> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let [temp_area, gauge_area, fan_area] =
-            Layout::vertical([Length(1), Length(1), Min(0)]).areas(inner);
+        let [temp_line, temp_gauge, fan_line, fan_gauge, info_area] =
+            Layout::vertical([Length(1), Length(1), Length(1), Length(1), Min(0)]).areas(inner);
 
-        // Temperature line
+        // Temperature line + zone label
         let temp_color = temp_level_color(self.sensor.skin_temp, &self.sensor.thresholds);
-        Span::styled(
-            format!("Skin  {:.1} °C", self.sensor.skin_temp),
-            Style::default().fg(temp_color).bold(),
-        )
-        .render(temp_area, buf);
+        let zone = thermal_zone(self.sensor.skin_temp, &self.sensor.thresholds);
+        Line::from(vec![
+            Span::styled(format!("Skin  {:.1} °C", self.sensor.skin_temp), Style::default().fg(temp_color).bold()),
+            Span::raw("  "),
+            Span::styled(zone, Style::default().fg(temp_color)),
+        ])
+        .render(temp_line, buf);
 
-        // Threshold gauge
-        let ratio = (self.sensor.skin_temp / (self.sensor.thresholds.critical + 5.0)).clamp(0.0, 1.0);
-        let thresholds = [
+        // Temperature threshold gauge
+        let max = self.sensor.thresholds.critical + 5.0;
+        let ratio = (self.sensor.skin_temp / max).clamp(0.0, 1.0);
+        let temp_thresholds = [
             (0.0, tailwind::GREEN.c400),
-            (self.sensor.thresholds.warn_high / (self.sensor.thresholds.critical + 5.0), tailwind::AMBER.c400),
-            (self.sensor.thresholds.prochot / (self.sensor.thresholds.critical + 5.0), tailwind::ORANGE.c400),
-            (self.sensor.thresholds.critical / (self.sensor.thresholds.critical + 5.0), tailwind::RED.c500),
+            (self.sensor.thresholds.warn_high / max, tailwind::AMBER.c400),
+            (self.sensor.thresholds.prochot / max, tailwind::ORANGE.c400),
+            (self.sensor.thresholds.critical / max, tailwind::RED.c500),
         ];
         common::ThresholdGauge {
             ratio,
             label: Some(Span::raw(format!("{:.1}°C", self.sensor.skin_temp))),
-            thresholds: &thresholds,
+            thresholds: &temp_thresholds,
             track_color: tailwind::SLATE.c800,
         }
-        .render(gauge_area, buf);
+        .render(temp_gauge, buf);
 
-        // Fan line
-        Paragraph::new(common::metric_row(
-            "Fan   ",
-            format!("{:.0} RPM", self.fan.rpm),
-            LABEL_COLOR,
-        ))
-        .render(fan_area, buf);
+        // Fan line + zone label
+        let fan_zone = fan_zone(self.fan.rpm, &self.fan.state_levels);
+        let fan_color = fan_zone_color(self.fan.rpm, &self.fan.state_levels);
+        Line::from(vec![
+            Span::styled(
+                format!("Fan   {:.0} RPM", self.fan.rpm),
+                Style::default().fg(LABEL_COLOR).bold(),
+            ),
+            Span::raw("  "),
+            Span::styled(fan_zone, Style::default().fg(fan_color)),
+        ])
+        .render(fan_line, buf);
+
+        // Fan RPM gauge
+        let max_rpm = self.fan.rpm_bounds.max.max(1.0);
+        let rpm_ratio = (self.fan.rpm / max_rpm).clamp(0.0, 1.0);
+        let rpm_thresholds = [
+            (0.0, tailwind::SLATE.c500),
+            (self.fan.state_levels.on / max_rpm, tailwind::GREEN.c500),
+            (self.fan.state_levels.ramping / max_rpm, tailwind::SKY.c400),
+            (self.fan.state_levels.max / max_rpm, tailwind::AMBER.c400),
+        ];
+        common::ThresholdGauge {
+            ratio: rpm_ratio,
+            label: Some(Span::raw(format!("{:.0} RPM", self.fan.rpm))),
+            thresholds: &rpm_thresholds,
+            track_color: tailwind::SLATE.c800,
+        }
+        .render(fan_gauge, buf);
+
+        // Compact threshold reference row
+        Paragraph::new(vec![
+            common::metric_row(
+                "Temp  ",
+                format!(
+                    "W:{:.0}° P:{:.0}° C:{:.0}°",
+                    self.sensor.thresholds.warn_high,
+                    self.sensor.thresholds.prochot,
+                    self.sensor.thresholds.critical
+                ),
+                tailwind::SLATE.c500,
+            ),
+            common::metric_row(
+                "Fan   ",
+                format!(
+                    "On:{:.0} Ramp:{:.0} Max:{:.0} RPM",
+                    self.fan.state_levels.on,
+                    self.fan.state_levels.ramping,
+                    self.fan.state_levels.max
+                ),
+                tailwind::SLATE.c500,
+            ),
+        ])
+        .render(info_area, buf);
     }
 }
 

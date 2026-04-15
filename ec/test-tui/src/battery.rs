@@ -180,9 +180,10 @@ impl<S: BatterySource> Module for Battery<S> {
         let state_color = if is_charging { tailwind::GREEN.c400 } else { tailwind::AMBER.c400 };
 
         let bat_pct = bat_percent(self.data.bst.battery_remaining_capacity, self.data.bix.design_capacity);
-        let rate = self.data.bst.battery_present_rate;
+        let health_pct = bat_health(self.data.bix.last_full_charge_capacity, self.data.bix.design_capacity);
         let cap_str = power_unit_as_capacity_str(self.data.bix.power_unit);
         let rate_str = power_unit_as_rate_str(self.data.bix.power_unit);
+        let voltage_v = self.data.bst.battery_present_voltage as f64 / 1000.0;
 
         let block = Block::bordered()
             .title(common::status_title("Battery", self.data.bst_success))
@@ -194,8 +195,13 @@ impl<S: BatterySource> Module for Battery<S> {
             Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)])
                 .areas(inner);
 
-        Span::styled(state_str, Style::default().fg(state_color).bold())
-            .render(state_area, buf);
+        // State + charge percent on one line
+        Line::from(vec![
+            Span::styled(state_str, Style::default().fg(state_color).bold()),
+            Span::raw("  "),
+            Span::styled(format!("{bat_pct}%"), Style::default().fg(Color::White).bold()),
+        ])
+        .render(state_area, buf);
 
         let gauge_color = bat_gauge_color(
             self.data.bst.battery_remaining_capacity,
@@ -207,20 +213,46 @@ impl<S: BatterySource> Module for Battery<S> {
             .percent(bat_pct)
             .render(gauge_area, buf);
 
+        let time_hint = estimate_time(
+            self.data.bst.battery_remaining_capacity,
+            self.data.bix.design_capacity,
+            self.data.bix.last_full_charge_capacity,
+            self.data.bst.battery_present_rate,
+            is_charging,
+        );
+        let rate_line = match time_hint {
+            Some(hint) => format!(
+                "{} {}  ({})",
+                self.data.bst.battery_present_rate, rate_str, hint
+            ),
+            None => format!("{} {}", self.data.bst.battery_present_rate, rate_str),
+        };
+
+        let health_color = health_color(health_pct);
+
         Paragraph::new(vec![
-            Line::from(vec![
-                Span::styled("Remaining  ", Style::default().fg(LABEL_COLOR).bold()),
-                Span::raw(format!(
+            common::metric_row(
+                "Remaining",
+                format!(
                     "{} / {} {}",
                     self.data.bst.battery_remaining_capacity,
                     self.data.bix.design_capacity,
                     cap_str
-                )),
-            ]),
-            Line::from(vec![
-                Span::styled("Rate       ", Style::default().fg(LABEL_COLOR).bold()),
-                Span::raw(format!("{rate} {rate_str}")),
-            ]),
+                ),
+                LABEL_COLOR,
+            ),
+            common::metric_row("Rate     ", rate_line, LABEL_COLOR),
+            common::metric_row("Voltage  ", format!("{voltage_v:.2} V"), LABEL_COLOR),
+            common::metric_row(
+                "Health   ",
+                format!("{health_pct}%"),
+                health_color,
+            ),
+            common::metric_row(
+                "Cycles   ",
+                format!("{}", self.data.bix.cycle_count),
+                LABEL_COLOR,
+            ),
         ])
         .render(details_area, buf);
     }
@@ -238,6 +270,44 @@ fn bat_gauge_color(remaining: u32, warning: u32, low: u32) -> Color {
     } else {
         BATGAUGE_COLOR_HIGH
     }
+}
+
+fn bat_health(last_full: u32, design: u32) -> u16 {
+    (last_full * 100).checked_div(design).unwrap_or(0).clamp(0, 100) as u16
+}
+
+fn health_color(health_pct: u16) -> Color {
+    if health_pct >= 80 {
+        tailwind::GREEN.c400
+    } else if health_pct >= 60 {
+        tailwind::AMBER.c400
+    } else {
+        tailwind::RED.c500
+    }
+}
+
+/// Returns a human-readable estimate of time to full (charging) or to empty (discharging).
+/// Returns `None` when the rate is zero or the data is unavailable.
+fn estimate_time(remaining: u32, design: u32, last_full: u32, rate: u32, is_charging: bool) -> Option<String> {
+    if rate == 0 {
+        return None;
+    }
+    let target = if is_charging { last_full.max(design) } else { 0 };
+    let delta = if is_charging {
+        target.saturating_sub(remaining)
+    } else {
+        remaining
+    };
+    // rate is in mW, delta is in mWh → time in hours
+    let minutes = (delta as f64 / rate as f64 * 60.0).round() as u64;
+    let h = minutes / 60;
+    let m = minutes % 60;
+    let label = if is_charging { "to full" } else { "to empty" };
+    Some(if h > 0 {
+        format!("~{h}h {m:02}m {label}")
+    } else {
+        format!("~{m}m {label}")
+    })
 }
 
 impl<S: BatterySource> Battery<S> {
