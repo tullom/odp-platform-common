@@ -3,10 +3,14 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use tokio::time::Instant;
-
 use tracing::Level;
-use tracing_subscriber::layer::Context;
+use tracing_subscriber::{
+    fmt::{
+        format::Writer as FmtWriter,
+        time::{FormatTime, UtcTime},
+    },
+    layer::Context,
+};
 
 const LOG_CAPACITY: usize = 500;
 
@@ -15,26 +19,21 @@ pub struct LogEntry {
     pub level: Level,
     pub target: String,
     pub message: String,
-    /// UTC wall-clock time formatted as `HH:MM:SS.mmm`.
+    /// UTC wall-clock time in RFC 3339 format.
     pub timestamp: String,
 }
 
 /// A clonable shared circular buffer that accumulates [`LogEntry`] items.
 ///
 /// All clones share the same underlying storage (backed by `Arc`).
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct LogBuffer {
     inner: Arc<Mutex<VecDeque<LogEntry>>>,
-    /// Monotonic start instant used to compute per-entry elapsed timestamps.
-    start: Instant,
 }
 
 impl LogBuffer {
     pub fn new() -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(VecDeque::new())),
-            start: Instant::now(),
-        }
+        Self::default()
     }
 
     pub fn push(&self, entry: LogEntry) {
@@ -54,24 +53,6 @@ impl LogBuffer {
             .cloned()
             .collect()
     }
-
-    /// Returns the elapsed time since this buffer was created, formatted as
-    /// `HH:MM:SS.mmm`.
-    pub fn elapsed_timestamp(&self) -> String {
-        fmt_elapsed(self.start.elapsed().as_millis())
-    }
-}
-
-// ── Timestamp helper ──────────────────────────────────────────────────────────
-
-/// Formats `total_ms` milliseconds as `HH:MM:SS.mmm`.
-fn fmt_elapsed(total_ms: u128) -> String {
-    let ms = (total_ms % 1000) as u32;
-    let secs = (total_ms / 1000) as u64;
-    let h = secs / 3600;
-    let m = (secs / 60) % 60;
-    let s = secs % 60;
-    format!("+{h:02}:{m:02}:{s:02}.{ms:03}")
 }
 
 // ── tracing layer ─────────────────────────────────────────────────────────────
@@ -107,11 +88,16 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TuiLayer {
     fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
         let mut visitor = MessageVisitor(String::new());
         event.record(&mut visitor);
+
+        let mut timestamp = String::new();
+        let mut w = FmtWriter::new(&mut timestamp);
+        UtcTime::rfc_3339().format_time(&mut w).ok();
+
         self.buffer.push(LogEntry {
             level: *event.metadata().level(),
             target: event.metadata().target().to_owned(),
             message: visitor.0,
-            timestamp: self.buffer.elapsed_timestamp(),
+            timestamp,
         });
     }
 }
