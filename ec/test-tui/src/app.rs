@@ -308,6 +308,11 @@ impl App {
             .map(|entry| {
                 Line::from(vec![
                     Span::styled(
+                        entry.timestamp.clone(),
+                        Style::default().fg(tailwind::SLATE.c500),
+                    ),
+                    Span::raw(" "),
+                    Span::styled(
                         format!("[{:<5}]", entry.level),
                         Style::default().fg(level_color(entry.level)),
                     ),

@@ -99,7 +99,7 @@ async fn main() -> color_eyre::Result<()> {
         })
         .transpose()?;
 
-    let log_buffer = logging::LogBuffer::default();
+    let log_buffer = logging::LogBuffer::new();
 
     // Default to WARN when RUST_LOG is not set so the panel isn't flooded.
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
