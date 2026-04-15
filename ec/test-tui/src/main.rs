@@ -18,7 +18,7 @@ use tracing_subscriber::{EnvFilter, prelude::*};
 #[command(about, version)]
 struct Cli {
     /// Data source to use.
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, default_value_t = SourceKind::default())]
     source: SourceKind,
 
     /// Serial port path (required when --source serial).
@@ -52,15 +52,28 @@ struct Cli {
 }
 
 /// Available data sources (only variants whose feature is compiled in are shown).
-#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Default)]
 enum SourceKind {
     /// Deterministic in-process mock — no hardware required.
     Mock,
     /// Real hardware via serial transport.
+    #[cfg_attr(not(target_os = "windows"), default)]
     Serial,
     #[cfg(target_os = "windows")]
-    /// Real hardware via ACPI (aarch64-pc-windows-msvc only).
-    Acpi,
+    /// Real hardware via the local OS interface (Windows ACPI).
+    #[default]
+    Local,
+}
+
+impl std::fmt::Display for SourceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Mock => write!(f, "mock"),
+            Self::Serial => write!(f, "serial"),
+            #[cfg(target_os = "windows")]
+            Self::Local => write!(f, "local"),
+        }
+    }
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Default)]
@@ -119,7 +132,7 @@ async fn main() -> color_eyre::Result<()> {
         }
 
         #[cfg(target_os = "windows")]
-        SourceKind::Acpi => {
+        SourceKind::Local => {
             let period = Duration::from_secs(cli.sample_period.unwrap_or(60));
             run_with_source(ec_test_lib::acpi::Acpi::new(cli.fan_instance), period, log_buffer, terminal)
         }

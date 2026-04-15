@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[command(name = "ec-test-cli", about = "CLI tool for EC feature testing")]
 pub struct Cli {
     /// Data source to use.
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, default_value_t = SourceKind::default())]
     pub source: SourceKind,
 
     /// Serial port path (required when --source serial).
@@ -32,15 +32,28 @@ pub struct Cli {
 }
 
 /// Available data sources.
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, Default, ValueEnum)]
 pub enum SourceKind {
     /// Deterministic in-process mock — no hardware required.
     Mock,
     /// Real hardware via serial transport.
+    #[cfg_attr(not(target_os = "windows"), default)]
     Serial,
     #[cfg(target_os = "windows")]
-    /// Real hardware via ACPI (Windows only).
-    Acpi,
+    /// Real hardware via the local OS interface (Windows ACPI).
+    #[default]
+    Local,
+}
+
+impl std::fmt::Display for SourceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Mock => write!(f, "mock"),
+            Self::Serial => write!(f, "serial"),
+            #[cfg(target_os = "windows")]
+            Self::Local => write!(f, "local"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default, ValueEnum)]
