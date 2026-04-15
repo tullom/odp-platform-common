@@ -1,7 +1,6 @@
 use battery_service_messages::{BixFixedStrings, BstReturn};
 use time_alarm_service_messages::{
-    AcpiTimestamp, AlarmExpiredWakePolicy, AlarmTimerSeconds, TimeAlarmDeviceCapabilities,
-    TimerStatus,
+    AcpiTimestamp, AlarmExpiredWakePolicy, AlarmTimerSeconds, TimeAlarmDeviceCapabilities, TimerStatus,
 };
 
 use crate::common::SampleBuf;

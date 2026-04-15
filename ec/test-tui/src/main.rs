@@ -8,7 +8,11 @@ mod thermal;
 mod updater;
 mod widgets;
 
-use std::{path::PathBuf, sync::{Arc, Mutex, RwLock}, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex, RwLock},
+    time::Duration,
+};
 
 use clap::Parser;
 use tracing_subscriber::{EnvFilter, prelude::*};
@@ -134,7 +138,12 @@ async fn main() -> color_eyre::Result<()> {
         #[cfg(target_os = "windows")]
         SourceKind::Local => {
             let period = Duration::from_secs(cli.sample_period.unwrap_or(60));
-            run_with_source(ec_test_lib::acpi::Acpi::new(cli.fan_instance), period, log_buffer, terminal)
+            run_with_source(
+                ec_test_lib::acpi::Acpi::new(cli.fan_instance),
+                period,
+                log_buffer,
+                terminal,
+            )
         }
     }
 }

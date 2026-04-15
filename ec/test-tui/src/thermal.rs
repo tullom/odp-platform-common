@@ -179,7 +179,10 @@ impl Thermal {
 
         let th = &state.thermal;
         let block = Block::bordered()
-            .title(common::status_title("Thermal", th.sensor.temp_success && th.fan.rpm_success))
+            .title(common::status_title(
+                "Thermal",
+                th.sensor.temp_success && th.fan.rpm_success,
+            ))
             .border_style(tailwind::ORANGE.c700);
         let inner = block.inner(area);
         block.render(area, buf);
@@ -252,9 +255,7 @@ impl Thermal {
                 "Temp  ",
                 format!(
                     "W:{:.0}\u{00b0} P:{:.0}\u{00b0} C:{:.0}\u{00b0}",
-                    th.sensor.thresholds.warn_high,
-                    th.sensor.thresholds.prochot,
-                    th.sensor.thresholds.critical
+                    th.sensor.thresholds.warn_high, th.sensor.thresholds.prochot, th.sensor.thresholds.critical
                 ),
                 tailwind::SLATE.c500,
             ),
@@ -262,9 +263,7 @@ impl Thermal {
                 "Fan   ",
                 format!(
                     "On:{:.0} Ramp:{:.0} Max:{:.0} RPM",
-                    th.fan.state_levels.on,
-                    th.fan.state_levels.ramping,
-                    th.fan.state_levels.max
+                    th.fan.state_levels.on, th.fan.state_levels.ramping, th.fan.state_levels.max
                 ),
                 tailwind::SLATE.c500,
             ),
@@ -290,10 +289,7 @@ impl Thermal {
                 format!("{:.1}", (s.thresholds.critical + 5.0) / 2.0),
                 Style::default().bold(),
             ),
-            Span::styled(
-                format!("{:.1}", s.thresholds.critical + 5.0),
-                Style::default().bold(),
-            ),
+            Span::styled(format!("{:.1}", s.thresholds.critical + 5.0), Style::default().bold()),
         ];
         let graph = common::Graph {
             title: "Temperature vs Time".to_string(),
@@ -311,17 +307,12 @@ impl Thermal {
 
     fn render_sensor_stats(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
         let s = &state.thermal.sensor;
-        let block = common::title_block(
-            common::status_title("Live Temperature", s.temp_success),
-            0,
-            LABEL_COLOR,
-        );
+        let block = common::title_block(common::status_title("Live Temperature", s.temp_success), 0, LABEL_COLOR);
         let inner = block.inner(area);
         block.render(area, buf);
 
         use Constraint::{Length, Min};
-        let [temp_line, gauge_area, thresholds_area] =
-            Layout::vertical([Length(1), Length(1), Min(0)]).areas(inner);
+        let [temp_line, gauge_area, thresholds_area] = Layout::vertical([Length(1), Length(1), Min(0)]).areas(inner);
 
         let color = temp_level_color(s.skin_temp, &s.thresholds);
         Paragraph::new(common::metric_row(
@@ -348,9 +339,21 @@ impl Thermal {
         .render(gauge_area, buf);
 
         Paragraph::new(vec![
-            common::metric_row("Warn    ", format!("{:.0} \u{00b0}C", s.thresholds.warn_high), LABEL_COLOR),
-            common::metric_row("Prochot ", format!("{:.0} \u{00b0}C", s.thresholds.prochot), LABEL_COLOR),
-            common::metric_row("Critical", format!("{:.0} \u{00b0}C", s.thresholds.critical), LABEL_COLOR),
+            common::metric_row(
+                "Warn    ",
+                format!("{:.0} \u{00b0}C", s.thresholds.warn_high),
+                LABEL_COLOR,
+            ),
+            common::metric_row(
+                "Prochot ",
+                format!("{:.0} \u{00b0}C", s.thresholds.prochot),
+                LABEL_COLOR,
+            ),
+            common::metric_row(
+                "Critical",
+                format!("{:.0} \u{00b0}C", s.thresholds.critical),
+                LABEL_COLOR,
+            ),
         ])
         .render(thresholds_area, buf);
     }
@@ -395,8 +398,7 @@ impl Thermal {
         block.render(area, buf);
 
         use Constraint::{Length, Min};
-        let [rpm_line, gauge_area, input_area] =
-            Layout::vertical([Length(1), Length(1), Min(0)]).areas(inner);
+        let [rpm_line, gauge_area, input_area] = Layout::vertical([Length(1), Length(1), Min(0)]).areas(inner);
 
         Paragraph::new(common::metric_row(
             "RPM  ",
@@ -433,7 +435,11 @@ impl Thermal {
         );
         Paragraph::new(vec![
             common::metric_row("On      ", format!("{:.0} \u{00b0}C", f.state_levels.on), LABEL_COLOR),
-            common::metric_row("Ramping ", format!("{:.0} \u{00b0}C", f.state_levels.ramping), LABEL_COLOR),
+            common::metric_row(
+                "Ramping ",
+                format!("{:.0} \u{00b0}C", f.state_levels.ramping),
+                LABEL_COLOR,
+            ),
             common::metric_row("Max     ", format!("{:.0} \u{00b0}C", f.state_levels.max), LABEL_COLOR),
         ])
         .block(block)
@@ -578,4 +584,3 @@ mod tests {
         assert!(!data.samples.get().is_empty());
     }
 }
-

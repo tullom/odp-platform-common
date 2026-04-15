@@ -33,10 +33,7 @@ impl<S: Source + Send + 'static> Updater<S> {
         thermal_rx: mpsc::Receiver<ThermalCommand>,
         graph_sample_interval: Duration,
     ) -> Self {
-        info!(
-            interval_secs = graph_sample_interval.as_secs_f64(),
-            "updater created"
-        );
+        info!(interval_secs = graph_sample_interval.as_secs_f64(), "updater created");
         Self {
             source,
             state,

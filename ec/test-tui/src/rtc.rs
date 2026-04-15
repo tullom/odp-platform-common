@@ -11,8 +11,8 @@ use ratatui::{
     widgets::{Block, Paragraph},
 };
 use time_alarm_service_messages::{
-    AcpiDaylightSavingsTimeStatus, AcpiTimeZone, AcpiTimerId, AlarmExpiredWakePolicy,
-    AlarmTimerSeconds, TimeAlarmDeviceCapabilities,
+    AcpiDaylightSavingsTimeStatus, AcpiTimeZone, AcpiTimerId, AlarmExpiredWakePolicy, AlarmTimerSeconds,
+    TimeAlarmDeviceCapabilities,
 };
 
 const LABEL_COLOR: Color = tailwind::VIOLET.c300;
@@ -82,7 +82,11 @@ impl TimerData {
                 },
             )),
         ])
-        .block(common::title_block(common::status_title(title, is_healthy), 0, LABEL_COLOR))
+        .block(common::title_block(
+            common::status_title(title, is_healthy),
+            0,
+            LABEL_COLOR,
+        ))
         .render(area, buf);
     }
 }
@@ -105,14 +109,11 @@ impl Rtc {
         use Constraint::{Length, Min, Percentage};
 
         let rtc = &state.rtc;
-        let is_healthy =
-            matches!(rtc.capabilities, Some(Ok(_))) && matches!(rtc.timestamp, Some(Ok(_)));
+        let is_healthy = matches!(rtc.capabilities, Some(Ok(_))) && matches!(rtc.timestamp, Some(Ok(_)));
 
         let [time_area, bottom_area] = Layout::vertical([Length(5), Min(0)]).areas(area);
-        let [caps_area, timers_area] =
-            Layout::horizontal([Percentage(50), Percentage(50)]).areas(bottom_area);
-        let [ac_area, dc_area] =
-            Layout::vertical([Percentage(50), Percentage(50)]).areas(timers_area);
+        let [caps_area, timers_area] = Layout::horizontal([Percentage(50), Percentage(50)]).areas(bottom_area);
+        let [ac_area, dc_area] = Layout::vertical([Percentage(50), Percentage(50)]).areas(timers_area);
 
         self.render_time_display(state, time_area, buf, is_healthy);
         self.render_capabilities(state, caps_area, buf);
@@ -217,10 +218,7 @@ impl Rtc {
                         Style::default().fg(tailwind::SLATE.c400),
                     ),
                     Span::raw("  \u{b7}  DST: "),
-                    Span::styled(
-                        format_dst(ts.dst_status),
-                        Style::default().fg(tailwind::SLATE.c400),
-                    ),
+                    Span::styled(format_dst(ts.dst_status), Style::default().fg(tailwind::SLATE.c400)),
                 ])
                 .centered(),
             ],
@@ -281,8 +279,14 @@ fn format_capabilities(capabilities: &TimeAlarmDeviceCapabilities) -> Vec<String
     }
     vec![
         "Capabilities:".to_string(),
-        format!("  Real time:       {}", as_supported(capabilities.realtime_implemented())),
-        format!("  Get Wake Status: {}", as_supported(capabilities.get_wake_status_supported())),
+        format!(
+            "  Real time:       {}",
+            as_supported(capabilities.realtime_implemented())
+        ),
+        format!(
+            "  Get Wake Status: {}",
+            as_supported(capabilities.get_wake_status_supported())
+        ),
         format!(
             "  Accuracy:        {}",
             if capabilities.realtime_accuracy_in_milliseconds() {
@@ -291,12 +295,30 @@ fn format_capabilities(capabilities: &TimeAlarmDeviceCapabilities) -> Vec<String
                 "Seconds"
             }
         ),
-        format!("  AC Wake:         {}", as_supported(capabilities.ac_wake_implemented())),
-        format!("  AC S4 Wake:      {}", as_supported(capabilities.ac_s4_wake_supported())),
-        format!("  AC S5 Wake:      {}", as_supported(capabilities.ac_s5_wake_supported())),
-        format!("  DC Wake:         {}", as_supported(capabilities.dc_wake_implemented())),
-        format!("  DC S4 Wake:      {}", as_supported(capabilities.dc_s4_wake_supported())),
-        format!("  DC S5 Wake:      {}", as_supported(capabilities.dc_s5_wake_supported())),
+        format!(
+            "  AC Wake:         {}",
+            as_supported(capabilities.ac_wake_implemented())
+        ),
+        format!(
+            "  AC S4 Wake:      {}",
+            as_supported(capabilities.ac_s4_wake_supported())
+        ),
+        format!(
+            "  AC S5 Wake:      {}",
+            as_supported(capabilities.ac_s5_wake_supported())
+        ),
+        format!(
+            "  DC Wake:         {}",
+            as_supported(capabilities.dc_wake_implemented())
+        ),
+        format!(
+            "  DC S4 Wake:      {}",
+            as_supported(capabilities.dc_s4_wake_supported())
+        ),
+        format!(
+            "  DC S5 Wake:      {}",
+            as_supported(capabilities.dc_s5_wake_supported())
+        ),
     ]
 }
 
@@ -421,4 +443,3 @@ mod tests {
         }
     }
 }
-

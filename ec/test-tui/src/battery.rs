@@ -1,9 +1,7 @@
 use crate::common;
 use crate::state::{AppState, BatteryCommand, BatteryState};
 use crate::widgets::battery;
-use battery_service_messages::{
-    BatteryState as BatteryStateFlag, BatterySwapCapability, BatteryTechnology, PowerUnit,
-};
+use battery_service_messages::{BatteryState as BatteryStateFlag, BatterySwapCapability, BatteryTechnology, PowerUnit};
 use core::ffi::CStr;
 use ec_test_lib::BatterySource;
 use std::sync::mpsc;
@@ -149,10 +147,8 @@ impl Battery {
 
     pub(crate) fn render(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
         use Constraint::{Min, Percentage};
-        let [strip_area, bottom_area] =
-            Layout::vertical([Percentage(22), Min(0)]).areas(area);
-        let [bix_area, chart_area] =
-            Layout::horizontal([Percentage(50), Percentage(50)]).areas(bottom_area);
+        let [strip_area, bottom_area] = Layout::vertical([Percentage(22), Min(0)]).areas(area);
+        let [bix_area, chart_area] = Layout::horizontal([Percentage(50), Percentage(50)]).areas(bottom_area);
 
         self.render_status_strip(state, strip_area, buf);
         self.render_bix(state, bix_area, buf);
@@ -163,7 +159,11 @@ impl Battery {
         let bat = &state.battery;
         let is_charging = bat.bst.battery_state.contains(BatteryStateFlag::CHARGING);
         let state_str = if is_charging { "▲ Charging" } else { "▼ Discharging" };
-        let state_color = if is_charging { tailwind::GREEN.c400 } else { tailwind::AMBER.c400 };
+        let state_color = if is_charging {
+            tailwind::GREEN.c400
+        } else {
+            tailwind::AMBER.c400
+        };
 
         let bat_pct = bat_percent(bat.bst.battery_remaining_capacity, bat.bix.design_capacity);
         let health_pct = bat_health(bat.bix.last_full_charge_capacity, bat.bix.design_capacity);
@@ -178,8 +178,7 @@ impl Battery {
         block.render(area, buf);
 
         let [state_area, gauge_area, details_area] =
-            Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)])
-                .areas(inner);
+            Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).areas(inner);
 
         Line::from(vec![
             Span::styled(state_str, Style::default().fg(state_color).bold()),
@@ -221,11 +220,7 @@ impl Battery {
             ),
             common::metric_row("Rate     ", rate_line, LABEL_COLOR),
             common::metric_row("Voltage  ", format!("{voltage_v:.2} V"), LABEL_COLOR),
-            common::metric_row(
-                "Health   ",
-                format!("{health_pct}%"),
-                health_color(health_pct),
-            ),
+            common::metric_row("Health   ", format!("{health_pct}%"), health_color(health_pct)),
             common::metric_row("Cycles   ", format!("{}", bat.bix.cycle_count), LABEL_COLOR),
         ])
         .render(details_area, buf);
@@ -293,21 +288,20 @@ impl Battery {
         let bat = &state.battery;
         let is_charging = bat.bst.battery_state.contains(BatteryStateFlag::CHARGING);
         let state_str = if is_charging { "▲ Charging" } else { "▼ Discharging" };
-        let state_color = if is_charging { tailwind::GREEN.c400 } else { tailwind::AMBER.c400 };
+        let state_color = if is_charging {
+            tailwind::GREEN.c400
+        } else {
+            tailwind::AMBER.c400
+        };
         let pct = bat_percent(bat.bst.battery_remaining_capacity, bat.bix.design_capacity);
         let cap_str = power_unit_as_capacity_str(bat.bix.power_unit);
         let rate_str = power_unit_as_rate_str(bat.bix.power_unit);
 
         let block = Block::bordered()
-            .title(
-                Line::from(vec![
-                    Span::styled(state_str, Style::default().fg(state_color).bold()),
-                    Span::styled(
-                        format!("  {pct}%"),
-                        Style::default().fg(Color::White).bold(),
-                    ),
-                ])
-            )
+            .title(Line::from(vec![
+                Span::styled(state_str, Style::default().fg(state_color).bold()),
+                Span::styled(format!("  {pct}%"), Style::default().fg(Color::White).bold()),
+            ]))
             .border_style(tailwind::SKY.c600);
         let inner = block.inner(area);
         block.render(area, buf);
@@ -347,10 +341,7 @@ impl Battery {
         ])
         .render(details_area, buf);
 
-        let mut bat_widget_state = battery::BatteryState::new(
-            bat.bst.battery_remaining_capacity,
-            is_charging,
-        );
+        let mut bat_widget_state = battery::BatteryState::new(bat.bst.battery_remaining_capacity, is_charging);
         battery::Battery::default()
             .color_high(BATGAUGE_COLOR_HIGH)
             .color_warning(BATGAUGE_COLOR_MEDIUM)
@@ -365,10 +356,7 @@ impl Battery {
         let bat = &state.battery;
         let y_labels = [
             "0".bold(),
-            Span::styled(
-                format!("{}", bat.bix.design_capacity / 2),
-                Style::default().bold(),
-            ),
+            Span::styled(format!("{}", bat.bix.design_capacity / 2), Style::default().bold()),
             Span::styled(format!("{}", bat.bix.design_capacity), Style::default().bold()),
         ];
         let graph = common::Graph {
@@ -395,10 +383,7 @@ impl Battery {
                 Text::raw("Revision").add_modifier(Modifier::BOLD),
                 format!("{}", bat.bix.revision).into(),
             ]),
-            Row::new(vec![
-                Text::raw("Power Unit").add_modifier(Modifier::BOLD),
-                rate.into(),
-            ]),
+            Row::new(vec![Text::raw("Power Unit").add_modifier(Modifier::BOLD), rate.into()]),
             Row::new(vec![
                 Text::raw("Design Capacity").add_modifier(Modifier::BOLD),
                 format!("{} {}", bat.bix.design_capacity, cap).into(),
@@ -481,8 +466,7 @@ impl Battery {
     fn render_bix(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
         let bat = &state.battery;
-        let [table_area, btp_area] =
-            Layout::vertical([Min(0), Length(3u16)]).areas(area);
+        let [table_area, btp_area] = Layout::vertical([Min(0), Length(3u16)]).areas(area);
 
         let table = Table::new(self.bix_rows(bat), [Constraint::Min(22), Constraint::Fill(1)])
             .block(
@@ -661,4 +645,3 @@ mod tests {
         assert_eq!(swap_cap_as_str(BatterySwapCapability::HotSwappable), "Hot swappable");
     }
 }
-

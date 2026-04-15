@@ -177,9 +177,9 @@ impl Widget for ThresholdGauge<'_> {
             .find(|(t, _)| self.ratio >= *t)
             .map_or(self.thresholds.first().map_or(Color::Green, |&(_, c)| c), |&(_, c)| c);
 
-        let label = self.label.unwrap_or_else(|| {
-            Span::raw(format!("{:.0}%", self.ratio * 100.0))
-        });
+        let label = self
+            .label
+            .unwrap_or_else(|| Span::raw(format!("{:.0}%", self.ratio * 100.0)));
 
         LineGauge::default()
             .filled_style(Style::default().fg(color))

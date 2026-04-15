@@ -5,7 +5,7 @@ use crate::state::{AppState, BatteryCommand, ThermalCommand};
 use crate::thermal::Thermal;
 
 use color_eyre::Result;
-use tracing::{debug, info, Level};
+use tracing::{Level, debug, info};
 
 use ratatui::{
     DefaultTerminal,
@@ -307,10 +307,7 @@ impl App {
             .take(visible_rows)
             .map(|entry| {
                 Line::from(vec![
-                    Span::styled(
-                        entry.timestamp.clone(),
-                        Style::default().fg(tailwind::SLATE.c500),
-                    ),
+                    Span::styled(entry.timestamp.clone(), Style::default().fg(tailwind::SLATE.c500)),
                     Span::raw(" "),
                     Span::styled(
                         format!("[{:<5}]", entry.level),
@@ -359,10 +356,7 @@ impl App {
             Span::styled(log_hint, desc),
         ];
         if self.log_visible {
-            spans.extend([
-                Span::styled("  ↑ ↓ ", key),
-                Span::styled(" scroll logs  ", desc),
-            ]);
+            spans.extend([Span::styled("  ↑ ↓ ", key), Span::styled(" scroll logs  ", desc)]);
         }
         spans.extend([Span::styled("  q ", key), Span::styled(" quit", desc)]);
         Line::from(spans).centered().render(area, buf);
