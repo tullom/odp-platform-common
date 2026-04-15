@@ -18,31 +18,52 @@ use ratatui::{
 };
 
 use std::{
-    collections::BTreeMap,
     sync::{Arc, RwLock, mpsc},
     time::{Duration, Instant},
 };
 
 use strum::{Display, EnumIter, FromRepr, IntoEnumIterator};
 
-/// Internal trait implemented by every UI module (tab).
-///
-/// Modules are purely presentational: they hold UI-local state (input
-/// boxes, cursor positions, etc.) but **no data source**.  The shared
-/// [`AppState`] is passed in at render time and written by the background
-/// [`crate::updater::Updater`].
-pub(crate) trait Module {
-    /// The module's display title.
-    fn title(&self) -> &'static str;
+/// Enum wrapping all UI modules.  Methods dispatch to the concrete type
+/// without dynamic dispatch or heap allocation.
+pub(crate) enum TabModule {
+    Battery(Battery),
+    Thermal(Thermal),
+    Rtc(Rtc),
+}
 
-    /// Handle a terminal input event (keyboard, mouse, resize, …).
-    fn handle_event(&mut self, evt: &Event);
+impl TabModule {
+    pub(crate) fn title(&self) -> &'static str {
+        match self {
+            Self::Battery(_) => "Battery Information",
+            Self::Thermal(_) => "Thermal Information",
+            Self::Rtc(_) => "RTC Information",
+        }
+    }
 
-    /// Render the full tab view.
-    fn render(&self, state: &AppState, area: Rect, buf: &mut Buffer);
+    pub(crate) fn handle_event(&mut self, evt: &Event) {
+        match self {
+            Self::Battery(m) => m.handle_event(evt),
+            Self::Thermal(m) => m.handle_event(evt),
+            Self::Rtc(m) => m.handle_event(evt),
+        }
+    }
 
-    /// Render a compact summary card for the dashboard overview.
-    fn render_card(&self, state: &AppState, area: Rect, buf: &mut Buffer);
+    pub(crate) fn render(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+        match self {
+            Self::Battery(m) => m.render(state, area, buf),
+            Self::Thermal(m) => m.render(state, area, buf),
+            Self::Rtc(m) => m.render(state, area, buf),
+        }
+    }
+
+    pub(crate) fn render_card(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+        match self {
+            Self::Battery(m) => m.render_card(state, area, buf),
+            Self::Thermal(m) => m.render_card(state, area, buf),
+            Self::Rtc(m) => m.render_card(state, area, buf),
+        }
+    }
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -69,7 +90,7 @@ enum SelectedTab {
 pub struct App {
     run_state: RunState,
     selected_tab: SelectedTab,
-    modules: BTreeMap<SelectedTab, Box<dyn Module>>,
+    modules: [TabModule; 3],
     shared_state: Arc<RwLock<AppState>>,
     log_buffer: LogBuffer,
     log_visible: bool,
@@ -86,11 +107,11 @@ impl App {
         thermal_tx: mpsc::Sender<ThermalCommand>,
         log_buffer: LogBuffer,
     ) -> Self {
-        let mut modules: BTreeMap<SelectedTab, Box<dyn Module>> = BTreeMap::new();
-
-        modules.insert(SelectedTab::TabBattery, Box::new(Battery::new(battery_tx)));
-        modules.insert(SelectedTab::TabThermal, Box::new(Thermal::new(thermal_tx)));
-        modules.insert(SelectedTab::TabRTC, Box::new(Rtc::new()));
+        let modules = [
+            TabModule::Battery(Battery::new(battery_tx)),
+            TabModule::Thermal(Thermal::new(thermal_tx)),
+            TabModule::Rtc(Rtc::new()),
+        ];
 
         Self {
             run_state: Default::default(),
@@ -144,8 +165,8 @@ impl App {
     }
 
     fn handle_tab_event(&mut self, evt: &Event) {
-        if let Some(module) = self.modules.get_mut(&self.selected_tab) {
-            module.handle_event(evt);
+        if let Some(i) = self.selected_tab.module_index() {
+            self.modules[i].handle_event(evt);
         }
     }
 
@@ -179,15 +200,16 @@ impl App {
             return;
         }
 
-        let module = self.modules.get(&self.selected_tab).expect("Tab must exist");
-        let block = self
-            .selected_tab
-            .block()
-            .title(Line::from(module.title()).bold().centered());
-        let inner = block.inner(area);
-
-        block.render(area, buf);
-        module.render(state, inner, buf);
+        if let Some(i) = self.selected_tab.module_index() {
+            let module = &self.modules[i];
+            let block = self
+                .selected_tab
+                .block()
+                .title(Line::from(module.title()).bold().centered());
+            let inner = block.inner(area);
+            block.render(area, buf);
+            module.render(state, inner, buf);
+        }
     }
 
     fn render_dashboard(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
@@ -197,15 +219,12 @@ impl App {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let tab_order = [SelectedTab::TabBattery, SelectedTab::TabThermal, SelectedTab::TabRTC];
-        let n = tab_order.len() as u16;
+        let n = self.modules.len() as u16;
         let constraints: Vec<Constraint> = (0..n).map(|_| Constraint::Ratio(1, n as u32)).collect();
         let card_areas = Layout::horizontal(constraints).split(inner);
 
-        for (i, tab) in tab_order.iter().enumerate() {
-            if let Some(module) = self.modules.get(tab) {
-                module.render_card(state, card_areas[i], buf);
-            }
+        for (i, module) in self.modules.iter().enumerate() {
+            module.render_card(state, card_areas[i], buf);
         }
     }
 }
@@ -312,6 +331,17 @@ impl App {
 }
 
 impl SelectedTab {
+    /// Returns the index into `App::modules` for this tab, or `None` for
+    /// Dashboard which renders all module cards inline.
+    fn module_index(self) -> Option<usize> {
+        match self {
+            Self::TabDashboard => None,
+            Self::TabBattery => Some(0),
+            Self::TabThermal => Some(1),
+            Self::TabRTC => Some(2),
+        }
+    }
+
     /// Get the previous tab, if there is no previous tab return the current tab.
     fn previous(self) -> Self {
         let current_index: usize = self as usize;

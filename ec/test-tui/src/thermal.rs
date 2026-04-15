@@ -1,4 +1,3 @@
-use crate::app::Module;
 use crate::common;
 use crate::state::{AppState, FanStateLevels, SensorThresholds, ThermalCommand};
 
@@ -150,12 +149,8 @@ impl Thermal {
     }
 }
 
-impl Module for Thermal {
-    fn title(&self) -> &'static str {
-        "Thermal Information"
-    }
-
-    fn handle_event(&mut self, evt: &Event) {
+impl Thermal {
+    pub(crate) fn handle_event(&mut self, evt: &Event) {
         if let Event::Key(key) = evt
             && key.code == KeyCode::Enter
             && key.kind == KeyEventKind::Press
@@ -168,13 +163,13 @@ impl Module for Thermal {
         }
     }
 
-    fn render(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    pub(crate) fn render(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
         let [sensor_area, fan_area] = common::area_split(area, Direction::Horizontal, 50, 50);
         self.render_sensor(state, sensor_area, buf);
         self.render_fan(state, fan_area, buf);
     }
 
-    fn render_card(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    pub(crate) fn render_card(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
         use ratatui::layout::Constraint::{Length, Min};
 
         let th = &state.thermal;
@@ -578,3 +573,4 @@ mod tests {
         assert!(!data.samples.get().is_empty());
     }
 }
+

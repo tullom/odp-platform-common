@@ -1,4 +1,3 @@
-use crate::app::Module;
 use crate::common;
 use crate::state::{AppState, BatteryCommand, BatteryState};
 use crate::widgets::battery;
@@ -115,12 +114,8 @@ impl Battery {
     }
 }
 
-impl Module for Battery {
-    fn title(&self) -> &'static str {
-        "Battery Information"
-    }
-
-    fn handle_event(&mut self, evt: &Event) {
+impl Battery {
+    pub(crate) fn handle_event(&mut self, evt: &Event) {
         if let Event::Key(key) = evt
             && key.code == KeyCode::Enter
             && key.kind == KeyEventKind::Press
@@ -133,7 +128,7 @@ impl Module for Battery {
         }
     }
 
-    fn render(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    pub(crate) fn render(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
         use Constraint::{Min, Percentage};
         let [strip_area, bottom_area] =
             Layout::vertical([Percentage(22), Min(0)]).areas(area);
@@ -145,7 +140,7 @@ impl Module for Battery {
         self.render_bst_chart(state, chart_area, buf);
     }
 
-    fn render_card(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    pub(crate) fn render_card(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
         let bat = &state.battery;
         let is_charging = bat.bst.battery_state.contains(BatteryStateFlag::CHARGING);
         let state_str = if is_charging { "▲ Charging" } else { "▼ Discharging" };
@@ -647,3 +642,4 @@ mod tests {
         assert_eq!(swap_cap_as_str(BatterySwapCapability::HotSwappable), "Hot swappable");
     }
 }
+

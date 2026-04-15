@@ -1,4 +1,3 @@
-use crate::app::Module;
 use crate::common;
 use crate::state::{AppState, Fetched, TimerData};
 use embedded_mcu_hal::time::Datetime;
@@ -99,14 +98,10 @@ impl Rtc {
     }
 }
 
-impl Module for Rtc {
-    fn title(&self) -> &'static str {
-        "RTC Information"
-    }
+impl Rtc {
+    pub(crate) fn handle_event(&mut self, _evt: &Event) {}
 
-    fn handle_event(&mut self, _evt: &Event) {}
-
-    fn render(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    pub(crate) fn render(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min, Percentage};
 
         let rtc = &state.rtc;
@@ -125,7 +120,7 @@ impl Module for Rtc {
         rtc.timers[AcpiTimerId::DcPower as usize].render_panel("DC Power Timer", dc_area, buf);
     }
 
-    fn render_card(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    pub(crate) fn render_card(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
 
         let rtc = &state.rtc;
@@ -426,3 +421,4 @@ mod tests {
         }
     }
 }
+
