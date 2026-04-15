@@ -15,7 +15,7 @@ use time_alarm_service_messages::{
 use crate::app::Module;
 use ec_test_lib::RtcSource;
 
-const LABEL_COLOR: Color = tailwind::SLATE.c200;
+const LABEL_COLOR: Color = tailwind::VIOLET.c300;
 
 /// `None` = not yet fetched, `Some(Ok(v))` = success, `Some(Err(e))` = fetch failed.
 pub(crate) type Fetched<T> = Option<color_eyre::Result<T>>;
@@ -50,7 +50,7 @@ mod rtc_timer {
             let is_healthy = matches!(self.value, Some(Ok(_)))
                 && matches!(self.wake_policy, Some(Ok(_)))
                 && matches!(self.timer_status, Some(Ok(_)));
-            let title = common::title_str_with_status(title, is_healthy);
+            let title = common::status_title(title, is_healthy);
 
             Paragraph::new(vec![
                 Line::raw(format_option_result(
@@ -90,7 +90,7 @@ mod rtc_timer {
                     },
                 )),
             ])
-            .block(common::title_block(&title, 0, LABEL_COLOR))
+            .block(common::title_block(title, 0, LABEL_COLOR))
             .render(area, buf);
         }
     }
@@ -134,8 +134,11 @@ impl<S: RtcSource> Module for Rtc<S> {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let is_healthy = matches!(self.capabilities, Some(Ok(_))) && matches!(self.timestamp, Some(Ok(_)));
-        let title = common::title_str_with_status("Real-time Clock", is_healthy);
-        let title = common::title_block(&title, 0, LABEL_COLOR);
+        let title = common::title_block(
+            common::status_title("Real-time Clock", is_healthy),
+            0,
+            LABEL_COLOR,
+        );
 
         let [general_area, timers_area] = common::area_split(area, Direction::Vertical, 70, 30);
         let [ac_area, dc_area] = common::area_split(timers_area, Direction::Horizontal, 50, 50);

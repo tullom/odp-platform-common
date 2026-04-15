@@ -13,7 +13,7 @@ use ratatui::{
 use std::sync::Arc;
 use tui_input::{Input, backend::crossterm::EventHandler};
 
-const LABEL_COLOR: Color = tailwind::SLATE.c200;
+const LABEL_COLOR: Color = tailwind::ORANGE.c300;
 const MAX_SAMPLES: usize = 60;
 
 // TODO: Implement using source once GET/SET VAR and GET/SET THRS commands are supported.
@@ -199,7 +199,7 @@ impl<S: ThermalSource> Thermal<S> {
         ];
         let graph = common::Graph {
             title: "Temperature vs Time".to_string(),
-            color: Color::Red,
+            color: tailwind::ORANGE.c400,
             samples: self.sensor.samples.get(),
             x_axis: "Time (s)".to_string(),
             x_bounds: [0.0, 60.0],
@@ -216,20 +216,23 @@ impl<S: ThermalSource> Thermal<S> {
     }
 
     fn render_sensor_stats(&self, area: Rect, buf: &mut Buffer) {
-        let title_str = common::title_str_with_status("Live Temperature", self.sensor.temp_success);
-        let stats_title = common::title_block(&title_str, 1, LABEL_COLOR);
-        let inner = stats_title.inner(area);
-        stats_title.render(area, buf);
+        let block = common::title_block(
+            common::status_title("Live Temperature", self.sensor.temp_success),
+            1,
+            LABEL_COLOR,
+        );
+        let inner = block.inner(area);
+        block.render(area, buf);
         let [temp_area, gauge_area] = common::area_split(inner, Direction::Vertical, 50, 50);
 
         let gauge_color = if self.sensor.skin_temp < self.sensor.thresholds.warn_high {
-            tailwind::GREEN.c700
+            tailwind::GREEN.c500
         } else if self.sensor.skin_temp < self.sensor.thresholds.prochot {
-            tailwind::YELLOW.c700
+            tailwind::YELLOW.c500
         } else if self.sensor.skin_temp < self.sensor.thresholds.critical {
-            tailwind::ORANGE.c700
+            tailwind::ORANGE.c500
         } else {
-            tailwind::RED.c700
+            tailwind::RED.c500
         };
         let gauge_percent = (((self.sensor.skin_temp / self.sensor.thresholds.critical) * 100.0) as u16).clamp(0, 100);
         Paragraph::new(self.create_sensor_stats()).render(temp_area, buf);
@@ -248,10 +251,13 @@ impl<S: ThermalSource> Thermal<S> {
     }
 
     fn render_sensor_thresholds(&self, area: Rect, buf: &mut Buffer) {
-        let title_str = common::title_str_with_status("Thresholds", self.sensor.thresholds_success);
-        let title = common::title_block(&title_str, 1, LABEL_COLOR);
+        let block = common::title_block(
+            common::status_title("Thresholds", self.sensor.thresholds_success),
+            1,
+            LABEL_COLOR,
+        );
         Paragraph::new(self.create_sensor_thresholds())
-            .block(title)
+            .block(block)
             .render(area, buf);
     }
 
@@ -271,7 +277,7 @@ impl<S: ThermalSource> Thermal<S> {
         ];
         let graph = common::Graph {
             title: "Fan RPM vs Time".to_string(),
-            color: Color::Blue,
+            color: tailwind::SKY.c400,
             samples: self.fan.samples.get(),
             x_axis: "Time (s)".to_string(),
             x_bounds: [0.0, 60.0],
@@ -293,10 +299,13 @@ impl<S: ThermalSource> Thermal<S> {
     }
 
     fn render_fan_stats(&self, area: Rect, buf: &mut Buffer) {
-        let title_str = common::title_str_with_status("Live Fan RPM", self.fan.rpm_success && self.fan.bounds_success);
-        let title = common::title_block(&title_str, 0, LABEL_COLOR);
-        let inner = title.inner(area);
-        title.render(area, buf);
+        let block = common::title_block(
+            common::status_title("Live Fan RPM", self.fan.rpm_success && self.fan.bounds_success),
+            0,
+            LABEL_COLOR,
+        );
+        let inner = block.inner(area);
+        block.render(area, buf);
 
         let [rpm_area, input_area] = common::area_split(inner, Direction::Vertical, 30, 70);
 
@@ -313,9 +322,12 @@ impl<S: ThermalSource> Thermal<S> {
     }
 
     fn render_fan_levels(&self, area: Rect, buf: &mut Buffer) {
-        let title_str = common::title_str_with_status("Fan State Levels", self.fan.levels_success);
-        let title = common::title_block(&title_str, 1, LABEL_COLOR);
-        Paragraph::new(self.create_fan_levels()).block(title).render(area, buf);
+        let block = common::title_block(
+            common::status_title("Fan State Levels", self.fan.levels_success),
+            1,
+            LABEL_COLOR,
+        );
+        Paragraph::new(self.create_fan_levels()).block(block).render(area, buf);
     }
 
     fn render_fan_rpm_input(&self, area: Rect, buf: &mut Buffer) {
@@ -325,7 +337,11 @@ impl<S: ThermalSource> Thermal<S> {
         let input = Paragraph::new(self.rpm_input.value())
             .style(Style::default())
             .scroll((0, scroll as u16))
-            .block(Block::bordered().title("Set Fan RPM <ENTER>"));
+            .block(
+                Block::bordered()
+                    .title("Set Fan RPM <ENTER>")
+                    .border_style(Style::default().fg(tailwind::ORANGE.c600)),
+            );
         input.render(area, buf);
     }
 }

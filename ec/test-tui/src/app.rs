@@ -176,7 +176,9 @@ impl App {
 
     fn render_selected_tab(&self, area: Rect, buf: &mut Buffer) {
         let module = self.modules.get(&self.selected_tab).expect("Tab must exist");
-        let block = self.selected_tab.block().title(module.title());
+        let block = self.selected_tab
+            .block()
+            .title(Line::from(module.title()).bold().centered());
         let inner = block.inner(area);
 
         block.render(area, buf);
@@ -215,9 +217,9 @@ const LOG_PANEL_HEIGHT: u16 = 8;
 fn level_color(level: Level) -> Color {
     match level {
         Level::ERROR => tailwind::RED.c400,
-        Level::WARN => tailwind::YELLOW.c400,
+        Level::WARN => tailwind::AMBER.c400,
         Level::INFO => tailwind::GREEN.c400,
-        Level::DEBUG => tailwind::CYAN.c400,
+        Level::DEBUG => tailwind::SKY.c400,
         Level::TRACE => tailwind::SLATE.c500,
     }
 }
@@ -225,7 +227,6 @@ fn level_color(level: Level) -> Color {
 impl App {
     fn render_log_panel(&self, area: Rect, buf: &mut Buffer) {
         let entries = self.log_buffer.entries();
-        // Subtract 2 for the top and bottom borders.
         let visible_rows = area.height.saturating_sub(2) as usize;
 
         let skip = entries.len().saturating_sub(visible_rows);
@@ -243,7 +244,18 @@ impl App {
             .collect();
 
         Paragraph::new(lines)
-            .block(Block::bordered().title(" Logs (set RUST_LOG to change verbosity) "))
+            .block(
+                Block::bordered()
+                    .title(Line::from(" Logs ").bold())
+                    .title(
+                        Line::from(Span::styled(
+                            " RUST_LOG=<level> ",
+                            Style::default().fg(tailwind::SLATE.c600),
+                        ))
+                        .right_aligned(),
+                    )
+                    .border_style(Style::default().fg(tailwind::SLATE.c700)),
+            )
             .render(area, buf);
     }
 }
@@ -265,13 +277,28 @@ impl SelectedTab {
 }
 
 fn render_title(area: Rect, buf: &mut Buffer) {
-    "ODP EC Demo App".bold().render(area, buf);
+    Line::from(Span::styled(
+        "ODP EC Demo",
+        Style::default().fg(tailwind::SLATE.c400).bold(),
+    ))
+    .right_aligned()
+    .render(area, buf);
 }
 
 fn render_footer(area: Rect, buf: &mut Buffer) {
-    Line::raw("◄ ► to change tab | Press q to quit")
-        .centered()
-        .render(area, buf);
+    let key = Style::default()
+        .fg(tailwind::SLATE.c100)
+        .bg(tailwind::SLATE.c700)
+        .bold();
+    let desc = Style::default().fg(tailwind::SLATE.c500);
+    Line::from(vec![
+        Span::styled(" ◄ ► ", key),
+        Span::styled(" switch tab  ", desc),
+        Span::styled(" q ", key),
+        Span::styled(" quit", desc),
+    ])
+    .centered()
+    .render(area, buf);
 }
 
 impl SelectedTab {
@@ -288,15 +315,15 @@ impl SelectedTab {
         Block::bordered()
             .border_set(symbols::border::PROPORTIONAL_TALL)
             .padding(Padding::uniform(1))
-            .border_style(self.palette().c700)
+            .border_style(self.palette().c500)
     }
 
     const fn palette(self) -> tailwind::Palette {
         match self {
-            Self::TabBattery => tailwind::BLUE,
-            Self::TabThermal => tailwind::EMERALD,
-            Self::TabRTC => tailwind::INDIGO,
-            Self::TabUCSI => tailwind::RED,
+            Self::TabBattery => tailwind::SKY,
+            Self::TabThermal => tailwind::ORANGE,
+            Self::TabRTC => tailwind::VIOLET,
+            Self::TabUCSI => tailwind::SLATE,
         }
     }
 }

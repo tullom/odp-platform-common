@@ -1,10 +1,10 @@
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style, Stylize},
+    style::{Color, Style, Stylize, palette::tailwind},
     symbols,
     text::{Line, Span},
-    widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Padding, Widget},
+    widgets::{Axis, Block, Chart, Dataset, GraphType, Padding, Widget},
 };
 use std::collections::VecDeque;
 use std::sync::LazyLock;
@@ -76,20 +76,28 @@ pub fn area_split(area: Rect, direction: Direction, first: u16, second: u16) -> 
         .expect("layout always produces exactly 2 areas")
 }
 
-// Create a wrapping title block
-pub fn title_block(title: &str, padding: u16, label_color: Color) -> Block<'_> {
-    let title = Line::from(title);
-    Block::new()
-        .borders(Borders::ALL)
+/// Wraps content in a titled bordered block.
+pub fn title_block(title: impl Into<Line<'static>>, padding: u16, label_color: Color) -> Block<'static> {
+    Block::bordered()
         .padding(Padding::vertical(padding))
-        .title(title)
+        .title(title.into())
         .fg(label_color)
 }
 
-// Combines a title string with a visual status indicator character
-pub fn title_str_with_status(title: &str, success: bool) -> String {
-    let status = if success { "✅" } else { "❌" };
-    format!("{title} {status}")
+/// Returns a [`Line`] with a colored status dot followed by `title`.
+///
+/// The dot is green on success and red on failure, providing a compact
+/// visual health indicator that renders reliably without terminal emoji.
+pub fn status_title(title: impl Into<String>, success: bool) -> Line<'static> {
+    let (dot, color) = if success {
+        ("● ", tailwind::GREEN.c400)
+    } else {
+        ("● ", tailwind::RED.c500)
+    };
+    Line::from(vec![
+        Span::styled(dot, Style::default().fg(color)),
+        Span::raw(title.into()),
+    ])
 }
 
 pub fn render_chart(area: Rect, buf: &mut Buffer, graph: Graph) {

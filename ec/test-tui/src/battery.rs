@@ -22,10 +22,10 @@ use ratatui::{
 };
 use tui_input::{Input, backend::crossterm::EventHandler};
 
-const BATGAUGE_COLOR_HIGH: Color = tailwind::GREEN.c500;
-const BATGAUGE_COLOR_MEDIUM: Color = tailwind::YELLOW.c500;
-const BATGAUGE_COLOR_LOW: Color = tailwind::RED.c500;
-const LABEL_COLOR: Color = tailwind::SLATE.c200;
+const BATGAUGE_COLOR_HIGH: Color = tailwind::GREEN.c400;
+const BATGAUGE_COLOR_MEDIUM: Color = tailwind::AMBER.c400;
+const BATGAUGE_COLOR_LOW: Color = tailwind::RED.c400;
+const LABEL_COLOR: Color = tailwind::SKY.c300;
 const MAX_SAMPLES: usize = 60;
 
 fn str_from_bytes(bytes: &[u8]) -> String {
@@ -215,7 +215,7 @@ impl<S: BatterySource> Battery<S> {
         ];
         let graph = common::Graph {
             title: "Capacity vs Time".to_string(),
-            color: Color::Red,
+            color: tailwind::SKY.c400,
             samples: self.data.samples.get(),
             x_axis: "Time (m)".to_string(),
             x_bounds: [0.0, 60.0],
@@ -350,41 +350,59 @@ impl<S: BatterySource> Battery<S> {
 
     fn render_bix(&self, area: Rect, buf: &mut Buffer) {
         let widths = [Constraint::Percentage(30), Constraint::Percentage(70)];
-        let title = common::title_str_with_status("Battery Info", self.data.bix_success);
         let table = Table::new(self.create_info(), widths)
-            .block(Block::bordered().title(title))
+            .block(
+                Block::bordered()
+                    .title(common::status_title("Battery Info", self.data.bix_success))
+                    .fg(LABEL_COLOR),
+            )
             .style(Style::new().white());
         Widget::render(table, area, buf);
     }
 
-    fn create_status(&self) -> Vec<Line<'static>> {
+    fn create_status_rows(&self) -> Vec<Row<'static>> {
         let power_unit = self.data.bix.power_unit;
+        let label = Style::default().add_modifier(Modifier::BOLD);
         vec![
-            Line::raw(format!(
-                "State:               {}",
-                charge_state_as_str(self.data.bst.battery_state)
-            )),
-            Line::raw(format!(
-                "Present Rate:        {} {}",
-                self.data.bst.battery_present_rate,
-                power_unit_as_rate_str(power_unit)
-            )),
-            Line::raw(format!(
-                "Remaining Capacity:  {} {}",
-                self.data.bst.battery_remaining_capacity,
-                power_unit_as_capacity_str(power_unit)
-            )),
-            Line::raw(format!(
-                "Present Voltage:     {} mV",
-                self.data.bst.battery_present_voltage
-            )),
+            Row::new(vec![
+                Text::styled("State", label),
+                Text::raw(charge_state_as_str(self.data.bst.battery_state)),
+            ]),
+            Row::new(vec![
+                Text::styled("Present Rate", label),
+                Text::raw(format!(
+                    "{} {}",
+                    self.data.bst.battery_present_rate,
+                    power_unit_as_rate_str(power_unit)
+                )),
+            ]),
+            Row::new(vec![
+                Text::styled("Remaining Capacity", label),
+                Text::raw(format!(
+                    "{} {}",
+                    self.data.bst.battery_remaining_capacity,
+                    power_unit_as_capacity_str(power_unit)
+                )),
+            ]),
+            Row::new(vec![
+                Text::styled("Present Voltage", label),
+                Text::raw(format!("{} mV", self.data.bst.battery_present_voltage)),
+            ]),
         ]
     }
 
     fn render_bst(&self, area: Rect, buf: &mut Buffer) {
-        let title = common::title_str_with_status("Battery Status", self.data.bst_success);
-        let title = common::title_block(&title, 0, LABEL_COLOR);
-        Paragraph::new(self.create_status()).block(title).render(area, buf);
+        let table = Table::new(
+            self.create_status_rows(),
+            [Constraint::Percentage(45), Constraint::Percentage(55)],
+        )
+        .block(
+            Block::bordered()
+                .title(common::status_title("Battery Status", self.data.bst_success))
+                .fg(LABEL_COLOR),
+        )
+        .style(Style::new().white());
+        Widget::render(table, area, buf);
     }
 
     fn create_trippoint(&self) -> Vec<Line<'static>> {
@@ -396,10 +414,13 @@ impl<S: BatterySource> Battery<S> {
     }
 
     fn render_btp(&self, area: Rect, buf: &mut Buffer) {
-        let title_str = common::title_str_with_status("Trippoint", self.btp_success);
-        let title = common::title_block(&title_str, 0, LABEL_COLOR);
-        let inner = title.inner(area);
-        title.render(area, buf);
+        let block = common::title_block(
+            common::status_title("Trippoint", self.btp_success),
+            0,
+            LABEL_COLOR,
+        );
+        let inner = block.inner(area);
+        block.render(area, buf);
 
         let [current_area, input_area] = common::area_split(inner, Direction::Vertical, 30, 70);
 
@@ -414,7 +435,11 @@ impl<S: BatterySource> Battery<S> {
         let input = Paragraph::new(self.btp_input.value())
             .style(Style::default())
             .scroll((0, scroll as u16))
-            .block(Block::bordered().title("Set Trippoint <ENTER>"));
+            .block(
+                Block::bordered()
+                    .title("Set Trippoint <ENTER>")
+                    .border_style(Style::default().fg(tailwind::SKY.c600)),
+            );
         input.render(area, buf);
     }
 
