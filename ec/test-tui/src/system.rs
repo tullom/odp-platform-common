@@ -123,7 +123,8 @@ impl System {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let core_rows = cpu.per_core.len().min(16) as u16;
+        let num_cores = cpu.per_core.len().min(64);
+        let core_rows = num_cores.min(16) as u16;
         let [usage_line, usage_gauge, cores_area, chart_area] =
             Layout::vertical([Length(1), Length(1), Length(core_rows), Min(0)]).areas(inner);
 
@@ -147,24 +148,33 @@ impl System {
         }
         .render(usage_gauge, buf);
 
-        // Per-core rows
-        let core_lines: Vec<Line<'_>> = cpu
-            .per_core
-            .iter()
-            .take(16)
-            .enumerate()
-            .map(|(i, &pct)| {
-                let p = pct as f64;
-                let color = usage_color(p);
-                Line::from(vec![
-                    Span::styled(format!("{i:>2} "), Style::default().fg(LABEL_COLOR)),
-                    Span::styled(format!("{p:>5.1}%"), Style::default().fg(color).bold()),
-                    Span::raw("  "),
-                    Span::styled(mini_bar(p, 20), Style::default().fg(color)),
-                ])
-            })
-            .collect();
-        Paragraph::new(core_lines).render(cores_area, buf);
+        // Per-core grid: up to 4 columns × 16 rows = 64 cores
+        let cols_used = num_cores.div_ceil(16).clamp(1, 4);
+        let col_areas = Layout::horizontal(
+            (0..cols_used).map(|_| Constraint::Ratio(1, cols_used as u32)),
+        )
+        .split(cores_area);
+
+        for col in 0..cols_used {
+            let start = col * 16;
+            let slice = &cpu.per_core[start..cpu.per_core.len().min(start + 16)];
+            let lines: Vec<Line<'_>> = slice
+                .iter()
+                .enumerate()
+                .map(|(row, &pct)| {
+                    let i = start + row;
+                    let p = pct as f64;
+                    let color = usage_color(p);
+                    Line::from(vec![
+                        Span::styled(format!("{i:>2} "), Style::default().fg(LABEL_COLOR)),
+                        Span::styled(format!("{p:>5.1}%"), Style::default().fg(color).bold()),
+                        Span::raw(" "),
+                        Span::styled(mini_bar(p, 8), Style::default().fg(color)),
+                    ])
+                })
+                .collect();
+            Paragraph::new(lines).render(col_areas[col], buf);
+        }
 
         // History chart
         if chart_area.height > 3 {
