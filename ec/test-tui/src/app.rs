@@ -42,6 +42,9 @@ pub(crate) trait Module {
 
     /// Render the module.
     fn render(&self, area: Rect, buf: &mut Buffer);
+
+    /// Render a compact summary card for the dashboard overview.
+    fn render_card(&self, area: Rect, buf: &mut Buffer);
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +57,8 @@ enum AppState {
 #[derive(Default, Clone, Copy, Display, FromRepr, EnumIter, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum SelectedTab {
     #[default]
+    #[strum(to_string = "Dashboard")]
+    TabDashboard,
     #[strum(to_string = "Battery")]
     TabBattery,
     #[strum(to_string = "Thermal")]
@@ -68,6 +73,7 @@ pub struct App {
     selected_tab: SelectedTab,
     modules: BTreeMap<SelectedTab, Box<dyn Module>>,
     log_buffer: LogBuffer,
+    log_visible: bool,
 }
 
 impl App {
@@ -87,6 +93,7 @@ impl App {
             selected_tab: Default::default(),
             modules,
             log_buffer,
+            log_visible: false,
         }
     }
 
@@ -121,8 +128,13 @@ impl App {
             && key.kind == KeyEventKind::Press
         {
             match key.code {
-                KeyCode::Char('l') | KeyCode::Right => self.next_tab(),
-                KeyCode::Char('h') | KeyCode::Left => self.previous_tab(),
+                KeyCode::Right => self.next_tab(),
+                KeyCode::Left => self.previous_tab(),
+                KeyCode::Char('1') => self.selected_tab = SelectedTab::TabDashboard,
+                KeyCode::Char('2') => self.selected_tab = SelectedTab::TabBattery,
+                KeyCode::Char('3') => self.selected_tab = SelectedTab::TabThermal,
+                KeyCode::Char('4') => self.selected_tab = SelectedTab::TabRTC,
+                KeyCode::Char('l') => self.log_visible = !self.log_visible,
                 KeyCode::Char('q') | KeyCode::Esc => self.quit(),
 
                 // Let the current tab handle event in this case
@@ -133,10 +145,9 @@ impl App {
     }
 
     fn handle_tab_event(&mut self, evt: &Event) {
-        self.modules
-            .get_mut(&self.selected_tab)
-            .expect("Tab must exist")
-            .handle_event(evt);
+        if let Some(module) = self.modules.get_mut(&self.selected_tab) {
+            module.handle_event(evt);
+        }
     }
 
     fn update_tabs(&mut self) {
@@ -170,8 +181,14 @@ impl App {
     }
 
     fn render_selected_tab(&self, area: Rect, buf: &mut Buffer) {
+        if self.selected_tab == SelectedTab::TabDashboard {
+            self.render_dashboard(area, buf);
+            return;
+        }
+
         let module = self.modules.get(&self.selected_tab).expect("Tab must exist");
-        let block = self.selected_tab
+        let block = self
+            .selected_tab
             .block()
             .title(Line::from(module.title()).bold().centered());
         let inner = block.inner(area);
@@ -179,12 +196,34 @@ impl App {
         block.render(area, buf);
         module.render(inner, buf);
     }
+
+    fn render_dashboard(&self, area: Rect, buf: &mut Buffer) {
+        let block = SelectedTab::TabDashboard
+            .block()
+            .title(Line::from("System Overview").bold().centered());
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        // Lay out cards: equal-width columns for each module.
+        let tab_order = [SelectedTab::TabBattery, SelectedTab::TabThermal, SelectedTab::TabRTC];
+        let n = tab_order.len() as u16;
+        let constraints: Vec<Constraint> = (0..n).map(|_| Constraint::Ratio(1, n as u32)).collect();
+        let card_areas = Layout::horizontal(constraints).split(inner);
+
+        for (i, tab) in tab_order.iter().enumerate() {
+            if let Some(module) = self.modules.get(tab) {
+                module.render_card(card_areas[i], buf);
+            }
+        }
+    }
 }
 
 impl Widget for &App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
-        let vertical = Layout::vertical([Length(1), Min(0), Length(LOG_PANEL_HEIGHT), Length(1)]);
+
+        let log_height = if self.log_visible { LOG_PANEL_HEIGHT } else { 0 };
+        let vertical = Layout::vertical([Length(1), Min(0), Length(log_height), Length(1)]);
         let [header_area, inner_area, log_area, footer_area] = vertical.areas(area);
 
         let horizontal = Layout::horizontal([Min(0), Length(20)]);
@@ -193,8 +232,10 @@ impl Widget for &App {
         render_title(title_area, buf);
         self.render_tabs(tabs_area, buf);
         self.render_selected_tab(inner_area, buf);
-        self.render_log_panel(log_area, buf);
-        render_footer(footer_area, buf);
+        if self.log_visible {
+            self.render_log_panel(log_area, buf);
+        }
+        self.render_footer(footer_area, buf);
     }
 }
 
@@ -206,7 +247,7 @@ impl Drop for App {
 
 // ── Log panel ─────────────────────────────────────────────────────────────────
 
-/// Height of the persistent log panel in terminal rows (includes the border).
+/// Height of the log panel in terminal rows (includes the border).
 const LOG_PANEL_HEIGHT: u16 = 8;
 
 fn level_color(level: Level) -> Color {
@@ -253,6 +294,27 @@ impl App {
             )
             .render(area, buf);
     }
+
+    fn render_footer(&self, area: Rect, buf: &mut Buffer) {
+        let key = Style::default()
+            .fg(tailwind::SLATE.c100)
+            .bg(tailwind::SLATE.c700)
+            .bold();
+        let desc = Style::default().fg(tailwind::SLATE.c500);
+        let log_hint = if self.log_visible { " hide logs" } else { " show logs" };
+        Line::from(vec![
+            Span::styled(" ◄ ► ", key),
+            Span::styled(" switch tab  ", desc),
+            Span::styled(" 1-4 ", key),
+            Span::styled(" jump to tab  ", desc),
+            Span::styled(" l ", key),
+            Span::styled(log_hint, desc),
+            Span::styled("  q ", key),
+            Span::styled(" quit", desc),
+        ])
+        .centered()
+        .render(area, buf);
+    }
 }
 
 impl SelectedTab {
@@ -273,26 +335,10 @@ impl SelectedTab {
 
 fn render_title(area: Rect, buf: &mut Buffer) {
     Line::from(Span::styled(
-        "ODP EC Demo",
+        "ODP EC Monitor",
         Style::default().fg(tailwind::SLATE.c400).bold(),
     ))
     .right_aligned()
-    .render(area, buf);
-}
-
-fn render_footer(area: Rect, buf: &mut Buffer) {
-    let key = Style::default()
-        .fg(tailwind::SLATE.c100)
-        .bg(tailwind::SLATE.c700)
-        .bold();
-    let desc = Style::default().fg(tailwind::SLATE.c500);
-    Line::from(vec![
-        Span::styled(" ◄ ► ", key),
-        Span::styled(" switch tab  ", desc),
-        Span::styled(" q ", key),
-        Span::styled(" quit", desc),
-    ])
-    .centered()
     .render(area, buf);
 }
 
@@ -314,6 +360,7 @@ impl SelectedTab {
 
     const fn palette(self) -> tailwind::Palette {
         match self {
+            Self::TabDashboard => tailwind::SLATE,
             Self::TabBattery => tailwind::SKY,
             Self::TabThermal => tailwind::ORANGE,
             Self::TabRTC => tailwind::VIOLET,

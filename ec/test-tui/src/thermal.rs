@@ -5,10 +5,10 @@ use ec_test_lib::{ThermalSource, Threshold};
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{Event, KeyCode, KeyEventKind},
-    layout::{Direction, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style, Stylize, palette::tailwind},
-    text::{Line, Span},
-    widgets::{Block, Gauge, Paragraph, Widget},
+    text::Span,
+    widgets::{Block, Paragraph, Widget},
 };
 use std::sync::Arc;
 use tui_input::{Input, backend::crossterm::EventHandler};
@@ -124,6 +124,18 @@ impl FanState {
     }
 }
 
+fn temp_level_color(temp: f64, thresholds: &SensorThresholds) -> Color {
+    if temp >= thresholds.critical {
+        tailwind::RED.c500
+    } else if temp >= thresholds.prochot {
+        tailwind::ORANGE.c500
+    } else if temp >= thresholds.warn_high {
+        tailwind::AMBER.c400
+    } else {
+        tailwind::GREEN.c400
+    }
+}
+
 pub struct Thermal<S: ThermalSource> {
     rpm_input: Input,
     sensor: SensorState,
@@ -161,6 +173,51 @@ impl<S: ThermalSource> Module for Thermal<S> {
             let _ = self.rpm_input.handle_event(evt);
         }
     }
+
+    fn render_card(&self, area: Rect, buf: &mut Buffer) {
+        use ratatui::layout::Constraint::{Length, Min};
+
+        let block = Block::bordered()
+            .title(common::status_title("Thermal", self.sensor.temp_success && self.fan.rpm_success))
+            .border_style(tailwind::ORANGE.c700);
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        let [temp_area, gauge_area, fan_area] =
+            Layout::vertical([Length(1), Length(1), Min(0)]).areas(inner);
+
+        // Temperature line
+        let temp_color = temp_level_color(self.sensor.skin_temp, &self.sensor.thresholds);
+        Span::styled(
+            format!("Skin  {:.1} °C", self.sensor.skin_temp),
+            Style::default().fg(temp_color).bold(),
+        )
+        .render(temp_area, buf);
+
+        // Threshold gauge
+        let ratio = (self.sensor.skin_temp / (self.sensor.thresholds.critical + 5.0)).clamp(0.0, 1.0);
+        let thresholds = [
+            (0.0, tailwind::GREEN.c400),
+            (self.sensor.thresholds.warn_high / (self.sensor.thresholds.critical + 5.0), tailwind::AMBER.c400),
+            (self.sensor.thresholds.prochot / (self.sensor.thresholds.critical + 5.0), tailwind::ORANGE.c400),
+            (self.sensor.thresholds.critical / (self.sensor.thresholds.critical + 5.0), tailwind::RED.c500),
+        ];
+        common::ThresholdGauge {
+            ratio,
+            label: Some(Span::raw(format!("{:.1}°C", self.sensor.skin_temp))),
+            thresholds: &thresholds,
+            track_color: tailwind::SLATE.c800,
+        }
+        .render(gauge_area, buf);
+
+        // Fan line
+        Paragraph::new(common::metric_row(
+            "Fan   ",
+            format!("{:.0} RPM", self.fan.rpm),
+            LABEL_COLOR,
+        ))
+        .render(fan_area, buf);
+    }
 }
 
 impl<S: ThermalSource> Thermal<S> {
@@ -178,11 +235,9 @@ impl<S: ThermalSource> Thermal<S> {
     }
 
     fn render_sensor(&self, area: Rect, buf: &mut Buffer) {
-        let [chart_area, widget_area] = common::area_split(area, Direction::Vertical, 70, 30);
-        let [stats_area, thresholds_area] = common::area_split(widget_area, Direction::Horizontal, 50, 50);
+        let [chart_area, stats_area] = common::area_split(area, Direction::Vertical, 65, 35);
         self.render_sensor_chart(chart_area, buf);
         self.render_sensor_stats(stats_area, buf);
-        self.render_sensor_thresholds(thresholds_area, buf);
     }
 
     fn render_sensor_chart(&self, area: Rect, buf: &mut Buffer) {
@@ -211,58 +266,56 @@ impl<S: ThermalSource> Thermal<S> {
         common::render_chart(area, buf, graph);
     }
 
-    fn create_sensor_stats(&self) -> Vec<Line<'static>> {
-        vec![Line::raw(format!("Skin temp: {:.2} °C", self.sensor.skin_temp))]
-    }
-
     fn render_sensor_stats(&self, area: Rect, buf: &mut Buffer) {
         let block = common::title_block(
             common::status_title("Live Temperature", self.sensor.temp_success),
-            1,
+            0,
             LABEL_COLOR,
         );
         let inner = block.inner(area);
         block.render(area, buf);
-        let [temp_area, gauge_area] = common::area_split(inner, Direction::Vertical, 50, 50);
 
-        let gauge_color = if self.sensor.skin_temp < self.sensor.thresholds.warn_high {
-            tailwind::GREEN.c500
-        } else if self.sensor.skin_temp < self.sensor.thresholds.prochot {
-            tailwind::YELLOW.c500
-        } else if self.sensor.skin_temp < self.sensor.thresholds.critical {
-            tailwind::ORANGE.c500
-        } else {
-            tailwind::RED.c500
-        };
-        let gauge_percent = (((self.sensor.skin_temp / self.sensor.thresholds.critical) * 100.0) as u16).clamp(0, 100);
-        Paragraph::new(self.create_sensor_stats()).render(temp_area, buf);
-        Gauge::default()
-            .gauge_style(gauge_color)
-            .percent(gauge_percent)
-            .render(gauge_area, buf);
-    }
+        use Constraint::{Length, Min};
+        let [temp_line, gauge_area, thresholds_area] =
+            Layout::vertical([Length(1), Length(1), Min(0)]).areas(inner);
 
-    fn create_sensor_thresholds(&self) -> Vec<Line<'static>> {
-        vec![
-            Line::raw(format!("Warn:     {} °C", self.sensor.thresholds.warn_high.round())),
-            Line::raw(format!("Prochot:  {} °C", self.sensor.thresholds.prochot.round())),
-            Line::raw(format!("Critical: {} °C", self.sensor.thresholds.critical.round())),
-        ]
-    }
+        // Temperature value line
+        let color = temp_level_color(self.sensor.skin_temp, &self.sensor.thresholds);
+        Paragraph::new(common::metric_row(
+            "Skin ",
+            format!("{:.2} °C", self.sensor.skin_temp),
+            color,
+        ))
+        .render(temp_line, buf);
 
-    fn render_sensor_thresholds(&self, area: Rect, buf: &mut Buffer) {
-        let block = common::title_block(
-            common::status_title("Thresholds", self.sensor.thresholds_success),
-            1,
-            LABEL_COLOR,
-        );
-        Paragraph::new(self.create_sensor_thresholds())
-            .block(block)
-            .render(area, buf);
+        // Threshold gauge
+        let max = self.sensor.thresholds.critical + 5.0;
+        let ratio = (self.sensor.skin_temp / max).clamp(0.0, 1.0);
+        let thresholds = [
+            (0.0, tailwind::GREEN.c400),
+            (self.sensor.thresholds.warn_high / max, tailwind::AMBER.c400),
+            (self.sensor.thresholds.prochot / max, tailwind::ORANGE.c400),
+            (self.sensor.thresholds.critical / max, tailwind::RED.c500),
+        ];
+        common::ThresholdGauge {
+            ratio,
+            label: Some(Span::raw(format!("{:.1}°C", self.sensor.skin_temp))),
+            thresholds: &thresholds,
+            track_color: tailwind::SLATE.c800,
+        }
+        .render(gauge_area, buf);
+
+        // Threshold labels
+        Paragraph::new(vec![
+            common::metric_row("Warn    ", format!("{:.0} °C", self.sensor.thresholds.warn_high), LABEL_COLOR),
+            common::metric_row("Prochot ", format!("{:.0} °C", self.sensor.thresholds.prochot), LABEL_COLOR),
+            common::metric_row("Critical", format!("{:.0} °C", self.sensor.thresholds.critical), LABEL_COLOR),
+        ])
+        .render(thresholds_area, buf);
     }
 
     fn render_fan(&self, area: Rect, buf: &mut Buffer) {
-        let [chart_area, widget_area] = common::area_split(area, Direction::Vertical, 70, 30);
+        let [chart_area, widget_area] = common::area_split(area, Direction::Vertical, 65, 35);
         let [stats_area, levels_area] = common::area_split(widget_area, Direction::Horizontal, 50, 50);
         self.render_fan_chart(chart_area, buf);
         self.render_fan_stats(stats_area, buf);
@@ -289,15 +342,6 @@ impl<S: ThermalSource> Thermal<S> {
         common::render_chart(area, buf, graph);
     }
 
-    fn create_fan_stats(&self) -> Vec<Line<'static>> {
-        vec![Line::raw(format!(
-            "RPM: {} ({}, {})",
-            self.fan.rpm.round(),
-            self.fan.rpm_bounds.min,
-            self.fan.rpm_bounds.max
-        ))]
-    }
-
     fn render_fan_stats(&self, area: Rect, buf: &mut Buffer) {
         let block = common::title_block(
             common::status_title("Live Fan RPM", self.fan.rpm_success && self.fan.bounds_success),
@@ -307,18 +351,34 @@ impl<S: ThermalSource> Thermal<S> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let [rpm_area, input_area] = common::area_split(inner, Direction::Vertical, 30, 70);
+        use Constraint::{Length, Min};
+        let [rpm_line, gauge_area, input_area] =
+            Layout::vertical([Length(1), Length(1), Min(0)]).areas(inner);
 
-        Paragraph::new(self.create_fan_stats()).render(rpm_area, buf);
+        Paragraph::new(common::metric_row(
+            "RPM  ",
+            format!("{:.0}  ({} – {})", self.fan.rpm, self.fan.rpm_bounds.min, self.fan.rpm_bounds.max),
+            LABEL_COLOR,
+        ))
+        .render(rpm_line, buf);
+
+        let max = self.fan.rpm_bounds.max.max(1.0);
+        let ratio = (self.fan.rpm / max).clamp(0.0, 1.0);
+        let thresholds = [
+            (0.0, tailwind::GREEN.c500),
+            (self.fan.state_levels.on / max, tailwind::SKY.c400),
+            (self.fan.state_levels.ramping / max, tailwind::AMBER.c400),
+            (self.fan.state_levels.max / max, tailwind::ORANGE.c400),
+        ];
+        common::ThresholdGauge {
+            ratio,
+            label: Some(Span::raw(format!("{:.0} RPM", self.fan.rpm))),
+            thresholds: &thresholds,
+            track_color: tailwind::SLATE.c800,
+        }
+        .render(gauge_area, buf);
+
         self.render_fan_rpm_input(input_area, buf);
-    }
-
-    fn create_fan_levels(&self) -> Vec<Line<'static>> {
-        vec![
-            Line::raw(format!("On:      {} °C", self.fan.state_levels.on.round())),
-            Line::raw(format!("Ramping: {} °C", self.fan.state_levels.ramping.round())),
-            Line::raw(format!("Max:     {} °C", self.fan.state_levels.max.round())),
-        ]
     }
 
     fn render_fan_levels(&self, area: Rect, buf: &mut Buffer) {
@@ -327,7 +387,13 @@ impl<S: ThermalSource> Thermal<S> {
             1,
             LABEL_COLOR,
         );
-        Paragraph::new(self.create_fan_levels()).block(block).render(area, buf);
+        Paragraph::new(vec![
+            common::metric_row("On      ", format!("{:.0} °C", self.fan.state_levels.on), LABEL_COLOR),
+            common::metric_row("Ramping ", format!("{:.0} °C", self.fan.state_levels.ramping), LABEL_COLOR),
+            common::metric_row("Max     ", format!("{:.0} °C", self.fan.state_levels.max), LABEL_COLOR),
+        ])
+        .block(block)
+        .render(area, buf);
     }
 
     fn render_fan_rpm_input(&self, area: Rect, buf: &mut Buffer) {

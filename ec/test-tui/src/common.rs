@@ -4,7 +4,7 @@ use ratatui::{
     style::{Color, Style, Stylize, palette::tailwind},
     symbols,
     text::{Line, Span},
-    widgets::{Axis, Block, Chart, Dataset, GraphType, Padding, Widget},
+    widgets::{Axis, Block, Chart, Dataset, GraphType, LineGauge, Padding, Widget},
 };
 use std::collections::VecDeque;
 use std::sync::LazyLock;
@@ -141,6 +141,53 @@ pub fn time_labels(t: usize, max_samples: usize) -> [Span<'static>; 3] {
         Span::styled(mid.to_string(), Style::default().bold()),
         Span::styled(end.to_string(), Style::default().bold()),
     ]
+}
+
+/// A single label/value row, styled for compact data tables.
+///
+/// `label` is rendered bold in `label_color`; `value` is plain white.
+pub fn metric_row<'a>(label: &'a str, value: impl Into<String>, label_color: Color) -> Line<'a> {
+    Line::from(vec![
+        Span::styled(label, Style::default().fg(label_color).bold()),
+        Span::raw("  "),
+        Span::styled(value.into(), Style::default().fg(Color::White)),
+    ])
+}
+
+/// A horizontal gauge with up to four colored threshold bands.
+///
+/// Bands are drawn left-to-right in ascending `value` order. The `ratio`
+/// (0.0–1.0) is the current fill fraction; the gauge itself is filled up to
+/// that point using whichever band color applies.
+pub struct ThresholdGauge<'a> {
+    pub ratio: f64,
+    pub label: Option<Span<'a>>,
+    /// (threshold_ratio, color_above) pairs sorted ascending.  The last
+    /// entry's color is used for any ratio above that threshold.
+    pub thresholds: &'a [(f64, Color)],
+    pub track_color: Color,
+}
+
+impl Widget for ThresholdGauge<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let color = self
+            .thresholds
+            .iter()
+            .rev()
+            .find(|(t, _)| self.ratio >= *t)
+            .map_or(self.thresholds.first().map_or(Color::Green, |&(_, c)| c), |&(_, c)| c);
+
+        let label = self.label.unwrap_or_else(|| {
+            Span::raw(format!("{:.0}%", self.ratio * 100.0))
+        });
+
+        LineGauge::default()
+            .filled_style(Style::default().fg(color))
+            .unfilled_style(Style::default().fg(self.track_color))
+            .label(label)
+            .ratio(self.ratio.clamp(0.0, 1.0))
+            .render(area, buf);
+    }
 }
 
 /// Minimal test doubles shared across module test suites.

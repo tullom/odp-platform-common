@@ -15,10 +15,10 @@ use ratatui::widgets::{Row, StatefulWidget, Table, Widget};
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{Event, KeyCode, KeyEventKind},
-    layout::{Constraint, Direction, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize, palette::tailwind},
     text::{Line, Span},
-    widgets::{Block, Paragraph},
+    widgets::{Block, Gauge, Paragraph},
 };
 use tui_input::{Input, backend::crossterm::EventHandler};
 
@@ -36,6 +36,7 @@ fn str_from_bytes(bytes: &[u8]) -> String {
         .to_owned()
 }
 
+#[cfg(test)]
 fn charge_state_as_str(state: BatteryState) -> &'static str {
     if state.contains(BatteryState::DISCHARGING) {
         "Discharging"
@@ -142,9 +143,17 @@ impl<S: BatterySource> Module for Battery<S> {
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        let [info_area, charge_area] = common::area_split(area, Direction::Horizontal, 80, 20);
-        self.render_info(info_area, buf);
-        self.render_battery(charge_area, buf);
+        use Constraint::{Min, Percentage};
+        // Top strip: live status bar + battery visual
+        // Bottom: BIX static info (left) | capacity chart (right)
+        let [strip_area, bottom_area] =
+            Layout::vertical([Percentage(22), Min(0)]).areas(area);
+        let [bix_area, chart_area] =
+            Layout::horizontal([Percentage(50), Percentage(50)]).areas(bottom_area);
+
+        self.render_status_strip(strip_area, buf);
+        self.render_bix(bix_area, buf);
+        self.render_bst_chart(chart_area, buf);
     }
 
     fn handle_event(&mut self, evt: &Event) {
@@ -163,6 +172,71 @@ impl<S: BatterySource> Module for Battery<S> {
         } else {
             let _ = self.btp_input.handle_event(evt);
         }
+    }
+
+    fn render_card(&self, area: Rect, buf: &mut Buffer) {
+        let is_charging = self.data.bst.battery_state.contains(BatteryState::CHARGING);
+        let state_str = if is_charging { "▲ Charging" } else { "▼ Discharging" };
+        let state_color = if is_charging { tailwind::GREEN.c400 } else { tailwind::AMBER.c400 };
+
+        let bat_pct = bat_percent(self.data.bst.battery_remaining_capacity, self.data.bix.design_capacity);
+        let rate = self.data.bst.battery_present_rate;
+        let cap_str = power_unit_as_capacity_str(self.data.bix.power_unit);
+        let rate_str = power_unit_as_rate_str(self.data.bix.power_unit);
+
+        let block = Block::bordered()
+            .title(common::status_title("Battery", self.data.bst_success))
+            .border_style(tailwind::SKY.c700);
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        let [state_area, gauge_area, details_area] =
+            Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)])
+                .areas(inner);
+
+        Span::styled(state_str, Style::default().fg(state_color).bold())
+            .render(state_area, buf);
+
+        let gauge_color = bat_gauge_color(
+            self.data.bst.battery_remaining_capacity,
+            self.data.bix.design_cap_of_warning,
+            self.data.bix.design_cap_of_low,
+        );
+        Gauge::default()
+            .gauge_style(gauge_color)
+            .percent(bat_pct)
+            .render(gauge_area, buf);
+
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled("Remaining  ", Style::default().fg(LABEL_COLOR).bold()),
+                Span::raw(format!(
+                    "{} / {} {}",
+                    self.data.bst.battery_remaining_capacity,
+                    self.data.bix.design_capacity,
+                    cap_str
+                )),
+            ]),
+            Line::from(vec![
+                Span::styled("Rate       ", Style::default().fg(LABEL_COLOR).bold()),
+                Span::raw(format!("{rate} {rate_str}")),
+            ]),
+        ])
+        .render(details_area, buf);
+    }
+}
+
+fn bat_percent(remaining: u32, design: u32) -> u16 {
+    (remaining * 100).checked_div(design).unwrap_or(0).clamp(0, 100) as u16
+}
+
+fn bat_gauge_color(remaining: u32, warning: u32, low: u32) -> Color {
+    if remaining <= low {
+        BATGAUGE_COLOR_LOW
+    } else if remaining <= warning {
+        BATGAUGE_COLOR_MEDIUM
+    } else {
+        BATGAUGE_COLOR_HIGH
     }
 }
 
@@ -193,15 +267,80 @@ impl<S: BatterySource> Battery<S> {
         }
     }
 
-    fn render_info(&self, area: Rect, buf: &mut Buffer) {
-        let [bix_area, status_area] = common::area_split(area, Direction::Horizontal, 50, 50);
-        let [bst_area, btp_area] = common::area_split(status_area, Direction::Vertical, 70, 30);
-        let [bst_chart_area, bst_info_area] = common::area_split(bst_area, Direction::Vertical, 65, 35);
+    fn render_status_strip(&self, area: Rect, buf: &mut Buffer) {
+        use Constraint::{Length, Min};
+        let is_charging = self.data.bst.battery_state.contains(BatteryState::CHARGING);
+        let state_str = if is_charging { "▲ Charging" } else { "▼ Discharging" };
+        let state_color = if is_charging { tailwind::GREEN.c400 } else { tailwind::AMBER.c400 };
+        let pct = bat_percent(self.data.bst.battery_remaining_capacity, self.data.bix.design_capacity);
+        let cap_str = power_unit_as_capacity_str(self.data.bix.power_unit);
+        let rate_str = power_unit_as_rate_str(self.data.bix.power_unit);
 
-        self.render_bix(bix_area, buf);
-        self.render_bst(bst_info_area, buf);
-        self.render_bst_chart(bst_chart_area, buf);
-        self.render_btp(btp_area, buf);
+        let block = Block::bordered()
+            .title(
+                Line::from(vec![
+                    Span::styled(state_str, Style::default().fg(state_color).bold()),
+                    Span::styled(
+                        format!("  {pct}%"),
+                        Style::default().fg(Color::White).bold(),
+                    ),
+                ])
+            )
+            .border_style(tailwind::SKY.c600);
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        // Split inner: gauge fills most of width, battery visual on the right
+        let [left_area, bat_area] = Layout::horizontal([Min(0), Length(6)]).areas(inner);
+        let [gauge_area, details_area] = Layout::vertical([Length(1), Min(0)]).areas(left_area);
+
+        let gauge_color = bat_gauge_color(
+            self.data.bst.battery_remaining_capacity,
+            self.data.bix.design_cap_of_warning,
+            self.data.bix.design_cap_of_low,
+        );
+        Gauge::default()
+            .gauge_style(gauge_color)
+            .percent(pct)
+            .render(gauge_area, buf);
+
+        Paragraph::new(vec![
+            common::metric_row(
+                "Remaining ",
+                format!(
+                    "{} / {} {}",
+                    self.data.bst.battery_remaining_capacity,
+                    self.data.bix.design_capacity,
+                    cap_str
+                ),
+                LABEL_COLOR,
+            ),
+            common::metric_row(
+                "Rate      ",
+                format!("{} {}", self.data.bst.battery_present_rate, rate_str),
+                LABEL_COLOR,
+            ),
+            common::metric_row(
+                "Voltage   ",
+                format!("{} mV", self.data.bst.battery_present_voltage),
+                LABEL_COLOR,
+            ),
+        ])
+        .render(details_area, buf);
+
+        // Compact battery visual
+        let mut bat_state = battery::BatteryState::new(
+            self.data.bst.battery_remaining_capacity,
+            is_charging,
+        );
+        battery::Battery::default()
+            .color_high(BATGAUGE_COLOR_HIGH)
+            .color_warning(BATGAUGE_COLOR_MEDIUM)
+            .color_low(BATGAUGE_COLOR_LOW)
+            .design_capacity(self.data.bix.design_capacity)
+            .warning_capacity(self.data.bix.design_cap_of_warning)
+            .low_capacity(self.data.bix.design_cap_of_low)
+            .render(bat_area, buf, &mut bat_state);
     }
 
     fn render_bst_chart(&self, area: Rect, buf: &mut Buffer) {
@@ -227,38 +366,30 @@ impl<S: BatterySource> Battery<S> {
         common::render_chart(area, buf, graph);
     }
 
-    fn create_info(&self) -> Vec<Row<'static>> {
+    fn bix_rows(&self) -> Vec<Row<'static>> {
         let power_unit = self.data.bix.power_unit;
+        let cap = power_unit_as_capacity_str(power_unit);
+        let rate = power_unit_as_rate_str(power_unit);
 
         vec![
             Row::new(vec![
-                Text::styled("Revision", Style::default().add_modifier(Modifier::BOLD)),
+                Text::raw("Revision").add_modifier(Modifier::BOLD),
                 format!("{}", self.data.bix.revision).into(),
             ]),
             Row::new(vec![
                 Text::raw("Power Unit").add_modifier(Modifier::BOLD),
-                power_unit_as_rate_str(power_unit).into(),
+                rate.into(),
             ]),
             Row::new(vec![
                 Text::raw("Design Capacity").add_modifier(Modifier::BOLD),
-                format!(
-                    "{} {}",
-                    self.data.bix.design_capacity,
-                    power_unit_as_capacity_str(power_unit)
-                )
-                .into(),
+                format!("{} {}", self.data.bix.design_capacity, cap).into(),
             ]),
             Row::new(vec![
                 Text::raw("Last Full Capacity").add_modifier(Modifier::BOLD),
-                format!(
-                    "{} {}",
-                    self.data.bix.last_full_charge_capacity,
-                    power_unit_as_capacity_str(power_unit)
-                )
-                .into(),
+                format!("{} {}", self.data.bix.last_full_charge_capacity, cap).into(),
             ]),
             Row::new(vec![
-                Text::raw("Battery Technology").add_modifier(Modifier::BOLD),
+                Text::raw("Technology").add_modifier(Modifier::BOLD),
                 bat_tech_as_str(self.data.bix.battery_technology).into(),
             ]),
             Row::new(vec![
@@ -267,21 +398,11 @@ impl<S: BatterySource> Battery<S> {
             ]),
             Row::new(vec![
                 Text::raw("Warning Capacity").add_modifier(Modifier::BOLD),
-                format!(
-                    "{} {}",
-                    self.data.bix.design_cap_of_warning,
-                    power_unit_as_capacity_str(power_unit)
-                )
-                .into(),
+                format!("{} {}", self.data.bix.design_cap_of_warning, cap).into(),
             ]),
             Row::new(vec![
                 Text::raw("Low Capacity").add_modifier(Modifier::BOLD),
-                format!(
-                    "{} {}",
-                    self.data.bix.design_cap_of_low,
-                    power_unit_as_capacity_str(power_unit)
-                )
-                .into(),
+                format!("{} {}", self.data.bix.design_cap_of_low, cap).into(),
             ]),
             Row::new(vec![
                 Text::raw("Cycle Count").add_modifier(Modifier::BOLD),
@@ -300,30 +421,20 @@ impl<S: BatterySource> Battery<S> {
                 format!("{} ms", self.data.bix.min_sampling_time).into(),
             ]),
             Row::new(vec![
-                Text::raw("Max Average Interval").add_modifier(Modifier::BOLD),
+                Text::raw("Max Avg Interval").add_modifier(Modifier::BOLD),
                 format!("{} ms", self.data.bix.max_averaging_interval).into(),
             ]),
             Row::new(vec![
-                Text::raw("Min Average Interval").add_modifier(Modifier::BOLD),
+                Text::raw("Min Avg Interval").add_modifier(Modifier::BOLD),
                 format!("{} ms", self.data.bix.min_averaging_interval).into(),
             ]),
             Row::new(vec![
-                Text::raw("Capacity Granularity 1").add_modifier(Modifier::BOLD),
-                format!(
-                    "{} {}",
-                    self.data.bix.battery_capacity_granularity_1,
-                    power_unit_as_capacity_str(power_unit)
-                )
-                .into(),
+                Text::raw("Cap. Granularity 1").add_modifier(Modifier::BOLD),
+                format!("{} {}", self.data.bix.battery_capacity_granularity_1, cap).into(),
             ]),
             Row::new(vec![
-                Text::raw("Capacity Granularity 2").add_modifier(Modifier::BOLD),
-                format!(
-                    "{} {}",
-                    self.data.bix.battery_capacity_granularity_2,
-                    power_unit_as_capacity_str(power_unit)
-                )
-                .into(),
+                Text::raw("Cap. Granularity 2").add_modifier(Modifier::BOLD),
+                format!("{} {}", self.data.bix.battery_capacity_granularity_2, cap).into(),
             ]),
             Row::new(vec![
                 Text::raw("Model Number").add_modifier(Modifier::BOLD),
@@ -342,124 +453,54 @@ impl<S: BatterySource> Battery<S> {
                 str_from_bytes(&self.data.bix.oem_info).into(),
             ]),
             Row::new(vec![
-                Text::raw("Swapping Capability").add_modifier(Modifier::BOLD),
+                Text::raw("Swap Capability").add_modifier(Modifier::BOLD),
                 swap_cap_as_str(self.data.bix.battery_swapping_capability).into(),
             ]),
         ]
     }
 
     fn render_bix(&self, area: Rect, buf: &mut Buffer) {
-        let widths = [Constraint::Min(24), Constraint::Fill(1)];
-        let table = Table::new(self.create_info(), widths)
+        use Constraint::{Length, Min};
+        // Reserve bottom rows for BTP input
+        let btp_height = 3u16;
+        let [table_area, btp_area] =
+            Layout::vertical([Min(0), Length(btp_height)]).areas(area);
+
+        let table = Table::new(self.bix_rows(), [Constraint::Min(22), Constraint::Fill(1)])
             .block(
                 Block::bordered()
-                    .title(common::status_title("Battery Info", self.data.bix_success))
+                    .title(common::status_title("Battery Info (BIX)", self.data.bix_success))
                     .fg(LABEL_COLOR),
             )
             .style(Style::new().white());
-        Widget::render(table, area, buf);
-    }
+        Widget::render(table, table_area, buf);
 
-    fn create_status_rows(&self) -> Vec<Row<'static>> {
-        let power_unit = self.data.bix.power_unit;
-        let label = Style::default().add_modifier(Modifier::BOLD);
-        vec![
-            Row::new(vec![
-                Text::styled("State", label),
-                Text::raw(charge_state_as_str(self.data.bst.battery_state)),
-            ]),
-            Row::new(vec![
-                Text::styled("Present Rate", label),
-                Text::raw(format!(
-                    "{} {}",
-                    self.data.bst.battery_present_rate,
-                    power_unit_as_rate_str(power_unit)
-                )),
-            ]),
-            Row::new(vec![
-                Text::styled("Remaining Capacity", label),
-                Text::raw(format!(
-                    "{} {}",
-                    self.data.bst.battery_remaining_capacity,
-                    power_unit_as_capacity_str(power_unit)
-                )),
-            ]),
-            Row::new(vec![
-                Text::styled("Present Voltage", label),
-                Text::raw(format!("{} mV", self.data.bst.battery_present_voltage)),
-            ]),
-        ]
-    }
-
-    fn render_bst(&self, area: Rect, buf: &mut Buffer) {
-        let table = Table::new(
-            self.create_status_rows(),
-            [Constraint::Min(20), Constraint::Fill(1)],
-        )
-        .block(
-            Block::bordered()
-                .title(common::status_title("Battery Status", self.data.bst_success))
-                .fg(LABEL_COLOR),
-        )
-        .style(Style::new().white());
-        Widget::render(table, area, buf);
-    }
-
-    fn create_trippoint(&self) -> Vec<Line<'static>> {
-        vec![Line::raw(format!(
-            "Current: {} {}",
-            self.btp,
-            power_unit_as_capacity_str(self.data.bix.power_unit)
-        ))]
-    }
-
-    fn render_btp(&self, area: Rect, buf: &mut Buffer) {
-        let block = common::title_block(
-            common::status_title("Trippoint", self.btp_success),
-            0,
-            LABEL_COLOR,
-        );
-        let inner = block.inner(area);
-        block.render(area, buf);
-
-        let [current_area, input_area] = common::area_split(inner, Direction::Vertical, 30, 70);
-
-        Paragraph::new(self.create_trippoint()).render(current_area, buf);
-        self.render_btp_input(input_area, buf);
+        self.render_btp_input(btp_area, buf);
     }
 
     fn render_btp_input(&self, area: Rect, buf: &mut Buffer) {
         let width = area.width.max(3) - 3;
         let scroll = self.btp_input.visual_scroll(width as usize);
+        let title = format!(
+            "Trippoint: {} {}  <set new value + Enter>",
+            self.btp,
+            power_unit_as_capacity_str(self.data.bix.power_unit)
+        );
+        let dot = if self.btp_success {
+            Span::styled("● ", Style::default().fg(tailwind::GREEN.c400))
+        } else {
+            Span::styled("● ", Style::default().fg(tailwind::RED.c500))
+        };
+        let block_title = Line::from(vec![dot, Span::raw(title)]);
 
-        let input = Paragraph::new(self.btp_input.value())
-            .style(Style::default())
+        Paragraph::new(self.btp_input.value())
             .scroll((0, scroll as u16))
             .block(
                 Block::bordered()
-                    .title("Set Trippoint <ENTER>")
-                    .border_style(Style::default().fg(tailwind::SKY.c600)),
-            );
-        input.render(area, buf);
-    }
-
-    fn render_battery(&self, area: Rect, buf: &mut Buffer) {
-        let mut state = battery::BatteryState::new(
-            self.data.bst.battery_remaining_capacity,
-            self.data
-                .bst
-                .battery_state
-                .contains(battery_service_messages::BatteryState::CHARGING),
-        );
-
-        battery::Battery::default()
-            .color_high(BATGAUGE_COLOR_HIGH)
-            .color_warning(BATGAUGE_COLOR_MEDIUM)
-            .color_low(BATGAUGE_COLOR_LOW)
-            .design_capacity(self.data.bix.design_capacity)
-            .warning_capacity(self.data.bix.design_cap_of_warning)
-            .low_capacity(self.data.bix.design_cap_of_low)
-            .render(area, buf, &mut state)
+                    .title(block_title)
+                    .border_style(Style::default().fg(tailwind::SKY.c700)),
+            )
+            .render(area, buf);
     }
 }
 

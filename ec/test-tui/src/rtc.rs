@@ -2,9 +2,10 @@ use crate::common;
 use crossterm::event::Event;
 use embedded_mcu_hal::time::Datetime;
 use ratatui::{
+    layout::{Layout, Rect},
     prelude::*,
     style::{Color, palette::tailwind},
-    widgets::Paragraph,
+    widgets::{Block, Paragraph},
 };
 use std::sync::Arc;
 use time_alarm_service_messages::{
@@ -133,50 +134,57 @@ impl<S: RtcSource> Module for Rtc<S> {
     fn handle_event(&mut self, _evt: &Event) {}
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
+        use ratatui::layout::Constraint::{Length, Min, Percentage};
+
         let is_healthy = matches!(self.capabilities, Some(Ok(_))) && matches!(self.timestamp, Some(Ok(_)));
-        let title = common::title_block(
-            common::status_title("Real-time Clock", is_healthy),
-            0,
-            LABEL_COLOR,
-        );
 
-        let [general_area, timers_area] = common::area_split(area, Direction::Vertical, 70, 30);
-        let [ac_area, dc_area] = common::area_split(timers_area, Direction::Horizontal, 50, 50);
+        // Top: large time/date display. Bottom: capabilities + timers.
+        let [time_area, bottom_area] = Layout::vertical([Length(5), Min(0)]).areas(area);
+        let [caps_area, timers_area] = Layout::horizontal([Percentage(50), Percentage(50)]).areas(bottom_area);
+        let [ac_area, dc_area] = Layout::vertical([Percentage(50), Percentage(50)]).areas(timers_area);
 
-        let time_messages = match &self.timestamp {
-            None => vec!["RTC time not yet retrieved".to_string()],
-            Some(Ok(timestamp)) => vec![
-                format!("Time:      {}", format_time(timestamp.datetime)),
-                format!("Time Zone: {}", format_time_zone(timestamp.time_zone)),
-                format!("DST:       {}", format_dst(timestamp.dst_status)),
-                "".to_string(),
-            ],
-            Some(Err(err)) => vec![format!("Error retrieving RTC time: {}", err)],
+        self.render_time_display(time_area, buf, is_healthy);
+        self.render_capabilities(caps_area, buf);
+        self.get_timer(AcpiTimerId::AcPower).render("AC Power Timer", ac_area, buf);
+        self.get_timer(AcpiTimerId::DcPower).render("DC Power Timer", dc_area, buf);
+    }
+
+    fn render_card(&self, area: Rect, buf: &mut Buffer) {
+        let is_healthy = matches!(self.timestamp, Some(Ok(_)));
+        let block = Block::bordered()
+            .title(common::status_title("RTC", is_healthy))
+            .border_style(tailwind::VIOLET.c700);
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        let (time_str, date_str, tz_str) = match &self.timestamp {
+            Some(Ok(ts)) => (
+                format_time_hms(ts.datetime),
+                format_date(ts.datetime),
+                format_time_zone(ts.time_zone),
+            ),
+            Some(Err(_)) => ("Error".into(), String::new(), String::new()),
+            None => ("Pending".into(), String::new(), String::new()),
         };
 
-        let capabilities_messages: Vec<String> = match &self.capabilities {
-            None => vec!["RTC capabilities not yet retrieved".to_string()],
-            Some(Ok(capabilities)) => format_capabilities(capabilities),
-            Some(Err(err)) => vec![format!("Error retrieving RTC capabilities: {}", err)],
-        };
-
-        let all_messages: Vec<Line<'_>> = time_messages
-            .into_iter()
-            .chain(capabilities_messages)
-            .map(Line::raw)
-            .collect();
-
-        Paragraph::new(all_messages).block(title).render(general_area, buf);
-
-        self.get_timer(AcpiTimerId::AcPower)
-            .render("AC Power Timer", ac_area, buf);
-        self.get_timer(AcpiTimerId::DcPower)
-            .render("DC Power Timer", dc_area, buf);
+        Paragraph::new(vec![
+            Line::from(Span::styled(time_str, Style::default().fg(Color::White).bold())),
+            Line::from(Span::styled(date_str, Style::default().fg(tailwind::VIOLET.c300))),
+            Line::from(Span::styled(tz_str, Style::default().fg(tailwind::SLATE.c500))),
+        ])
+        .render(inner, buf);
     }
 }
 
-fn format_dst(dst: AcpiDaylightSavingsTimeStatus) -> &'static str {
-    match dst {
+fn format_time_hms(time: Datetime) -> String {
+    format!("{:02}:{:02}:{:02}", time.hour(), time.minute(), time.second())
+}
+
+fn format_date(time: Datetime) -> String {
+    format!("{:04}-{:02}-{:02}", time.year(), u8::from(time.month()), time.day())
+}
+
+fn format_dst(dst: AcpiDaylightSavingsTimeStatus) -> &'static str {    match dst {
         AcpiDaylightSavingsTimeStatus::NotObserved => "Not Observed",
         AcpiDaylightSavingsTimeStatus::NotAdjusted => "No",
         AcpiDaylightSavingsTimeStatus::Adjusted => "Yes",
@@ -232,6 +240,7 @@ fn format_capabilities(capabilities: &TimeAlarmDeviceCapabilities) -> Vec<String
     ]
 }
 
+#[cfg(test)]
 fn format_time(time: Datetime) -> String {
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
@@ -270,6 +279,59 @@ impl<S: RtcSource> Rtc<S> {
 
     fn get_timer(&self, timer_id: AcpiTimerId) -> &RtcTimer {
         &self.timers[timer_id as usize]
+    }
+
+    fn render_time_display(&self, area: Rect, buf: &mut Buffer, is_healthy: bool) {
+        let block = Block::bordered()
+            .title(common::status_title("Real-Time Clock", is_healthy))
+            .border_style(tailwind::VIOLET.c600);
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        let lines: Vec<Line<'_>> = match &self.timestamp {
+            None => vec![Line::raw("Pending...")],
+            Some(Err(e)) => vec![Line::raw(format!("Error: {e}"))],
+            Some(Ok(ts)) => vec![
+                Line::from(Span::styled(
+                    format_time_hms(ts.datetime),
+                    Style::default().fg(Color::White).bold(),
+                ))
+                .centered(),
+                Line::from(Span::styled(
+                    format_date(ts.datetime),
+                    Style::default().fg(tailwind::VIOLET.c300),
+                ))
+                .centered(),
+                Line::from(vec![
+                    Span::styled(format_time_zone(ts.time_zone), Style::default().fg(tailwind::SLATE.c400)),
+                    Span::raw("  ·  DST: "),
+                    Span::styled(format_dst(ts.dst_status), Style::default().fg(tailwind::SLATE.c400)),
+                ])
+                .centered(),
+            ],
+        };
+
+        Paragraph::new(lines).render(inner, buf);
+    }
+
+    fn render_capabilities(&self, area: Rect, buf: &mut Buffer) {
+        let lines: Vec<Line<'_>> = match &self.capabilities {
+            None => vec![Line::raw("Pending...")],
+            Some(Err(e)) => vec![Line::raw(format!("Error: {e}"))],
+            Some(Ok(caps)) => format_capabilities(caps)
+                .into_iter()
+                .map(Line::raw)
+                .collect(),
+        };
+
+        let is_ok = matches!(self.capabilities, Some(Ok(_)));
+        Paragraph::new(lines)
+            .block(
+                Block::bordered()
+                    .title(common::status_title("Capabilities", is_ok))
+                    .border_style(tailwind::VIOLET.c800),
+            )
+            .render(area, buf);
     }
 }
 
