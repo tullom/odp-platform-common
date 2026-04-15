@@ -46,11 +46,6 @@ struct Cli {
     #[arg(long, default_value_t = 0)]
     fan_instance: u8,
 
-    /// Battery graph sample period in seconds.
-    /// Defaults to 1 for mock sources and 60 for real hardware.
-    #[arg(long)]
-    sample_period: Option<u64>,
-
     /// Write logs to this file in addition to the in-app log panel.
     #[arg(long)]
     log_file: Option<PathBuf>,
@@ -123,8 +118,7 @@ async fn main() -> color_eyre::Result<()> {
 
     match cli.source {
         SourceKind::Mock => {
-            let period = Duration::from_secs(cli.sample_period.unwrap_or(1));
-            run_with_source(ec_test_lib::mock::Mock::default(), period, log_buffer, terminal)
+            run_with_source(ec_test_lib::mock::Mock::default(), log_buffer, terminal)
         }
 
         SourceKind::Serial => {
@@ -132,16 +126,13 @@ async fn main() -> color_eyre::Result<()> {
             let hw_flow = matches!(cli.flow_control, FlowControl::Hardware);
             let source =
                 ec_test_lib::serial::Serial::new(&port, cli.baud, hw_flow, cli.sensor_instance, cli.fan_instance)?;
-            let period = Duration::from_secs(cli.sample_period.unwrap_or(60));
-            run_with_source(source, period, log_buffer, terminal)
+            run_with_source(source, log_buffer, terminal)
         }
 
         #[cfg(target_os = "windows")]
         SourceKind::Local => {
-            let period = Duration::from_secs(cli.sample_period.unwrap_or(60));
             run_with_source(
                 ec_test_lib::acpi::Acpi::new(cli.fan_instance),
-                period,
                 log_buffer,
                 terminal,
             )
@@ -149,9 +140,14 @@ async fn main() -> color_eyre::Result<()> {
     }
 }
 
+/// Update periods — hardcoded, not user-configurable.
+const BATTERY_PERIOD: Duration = Duration::from_secs(30);
+const THERMAL_PERIOD: Duration = Duration::from_secs(5);
+const RTC_PERIOD: Duration = Duration::from_secs(1);
+const SYSTEM_PERIOD: Duration = Duration::from_millis(500);
+
 fn run_with_source<S>(
     source: S,
-    period: Duration,
     log_buffer: logging::LogBuffer,
     terminal: ratatui::DefaultTerminal,
 ) -> color_eyre::Result<()>
@@ -161,13 +157,32 @@ where
     let shared_state = Arc::new(RwLock::new(state::AppState::default()));
     let (battery_tx, battery_rx) = std::sync::mpsc::channel::<state::BatteryCommand>();
     let (thermal_tx, thermal_rx) = std::sync::mpsc::channel::<state::ThermalCommand>();
-    let upd = updater::Updater::new(
-        Arc::new(source),
-        Arc::clone(&shared_state),
-        battery_rx,
-        thermal_rx,
-        period,
-    );
-    tokio::task::spawn(async move { upd.run(period).await });
+    let source = Arc::new(source);
+
+    tokio::task::spawn({
+        let upd = updater::BatteryUpdater::new(
+            Arc::clone(&source),
+            Arc::clone(&shared_state),
+            battery_rx,
+        );
+        async move { upd.run(BATTERY_PERIOD).await }
+    });
+    tokio::task::spawn({
+        let upd = updater::ThermalUpdater::new(
+            Arc::clone(&source),
+            Arc::clone(&shared_state),
+            thermal_rx,
+        );
+        async move { upd.run(THERMAL_PERIOD).await }
+    });
+    tokio::task::spawn({
+        let upd = updater::RtcUpdater::new(Arc::clone(&source), Arc::clone(&shared_state));
+        async move { upd.run(RTC_PERIOD).await }
+    });
+    tokio::task::spawn({
+        let upd = updater::SystemUpdater::new(Arc::clone(&shared_state));
+        async move { upd.run(SYSTEM_PERIOD).await }
+    });
+
     app::App::new(shared_state, battery_tx, thermal_tx, log_buffer).run(terminal)
 }

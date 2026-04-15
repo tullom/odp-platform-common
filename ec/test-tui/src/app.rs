@@ -250,13 +250,17 @@ impl App {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let n = self.modules.len() as u16;
-        let constraints: Vec<Constraint> = (0..n).map(|_| Constraint::Ratio(1, n as u32)).collect();
-        let card_areas = Layout::horizontal(constraints).split(inner);
+        let [row0, row1] =
+            Layout::vertical([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(inner);
+        let [card00, card01] =
+            Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(row0);
+        let [card10, card11] =
+            Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(row1);
 
-        for (i, module) in self.modules.iter().enumerate() {
-            module.render_card(state, card_areas[i], buf);
-        }
+        self.modules[0].render_card(state, card00, buf); // Battery
+        self.modules[1].render_card(state, card01, buf); // Thermal
+        self.modules[2].render_card(state, card10, buf); // RTC
+        self.modules[3].render_card(state, card11, buf); // System
     }
 }
 

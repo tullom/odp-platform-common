@@ -7,53 +7,27 @@ use tracing::{debug, info, trace, warn};
 
 use crate::battery::{poll_bix, poll_bst};
 use crate::state::{AppState, BatteryCommand, FanRpmBounds, FanStateLevels, ThermalCommand};
-/// Background updater — owns the data source and periodically refreshes
-/// the shared [`AppState`] so the UI thread only has to render.
-///
-/// Runs on a dedicated OS thread via [`std::thread::spawn`].
-pub struct Updater<S: Source> {
+
+// ── Battery ───────────────────────────────────────────────────────────────────
+
+/// Polls BST/BIX and records a graph sample on every tick.
+/// Intended to run every 30 s.
+pub struct BatteryUpdater<S: Source> {
     source: Arc<S>,
     state: Arc<RwLock<AppState>>,
     battery_rx: mpsc::Receiver<BatteryCommand>,
-    thermal_rx: mpsc::Receiver<ThermalCommand>,
-    graph_sample_interval: Duration,
-    last_graph_update: Option<Instant>,
-    /// True once BIX (static battery info) has been fetched successfully.
     bix_cached: bool,
-    /// True once RTC capabilities (static) have been fetched successfully.
-    rtc_caps_cached: bool,
-    sys_info: sysinfo::System,
-    sys_nets: sysinfo::Networks,
-    last_system_update: Option<Instant>,
 }
 
-impl<S: Source + Send + 'static> Updater<S> {
+impl<S: Source + Send + Sync + 'static> BatteryUpdater<S> {
     pub fn new(
         source: Arc<S>,
         state: Arc<RwLock<AppState>>,
         battery_rx: mpsc::Receiver<BatteryCommand>,
-        thermal_rx: mpsc::Receiver<ThermalCommand>,
-        graph_sample_interval: Duration,
     ) -> Self {
-        info!(interval_secs = graph_sample_interval.as_secs_f64(), "updater created");
-        Self {
-            source,
-            state,
-            battery_rx,
-            thermal_rx,
-            graph_sample_interval,
-            last_graph_update: None,
-            bix_cached: false,
-            rtc_caps_cached: false,
-            sys_info: sysinfo::System::new_all(),
-            sys_nets: sysinfo::Networks::new_with_refreshed_list(),
-            last_system_update: None,
-        }
+        Self { source, state, battery_rx, bix_cached: false }
     }
 
-    // ── Command processing ────────────────────────────────────────────────────
-
-    #[tracing::instrument(skip_all)]
     fn process_commands(&mut self) {
         while let Ok(cmd) = self.battery_rx.try_recv() {
             let BatteryCommand::SetBtp(v) = cmd;
@@ -69,27 +43,14 @@ impl<S: Source + Send + 'static> Updater<S> {
                 s.battery.btp_success = success;
             }
         }
-        while let Ok(cmd) = self.thermal_rx.try_recv() {
-            let ThermalCommand::SetRpm(rpm) = cmd;
-            debug!(rpm, "processing SetRpm command");
-            if self.source.set_rpm(rpm).is_err() {
-                warn!(rpm, "failed to set fan RPM on hardware");
-            }
-        }
     }
 
-    // ── Per-subsystem update helpers ──────────────────────────────────────────
-
     #[tracing::instrument(skip_all)]
-    fn update_battery(&mut self) {
-        let now = Instant::now();
-        let update_graph = self
-            .last_graph_update
-            .is_none_or(|t| now.duration_since(t) >= self.graph_sample_interval);
+    fn update(&mut self) {
+        self.process_commands();
 
         let mut s = self.state.write().expect("state RwLock poisoned");
 
-        // BIX is static — only fetch until we get one good read.
         if !self.bix_cached {
             poll_bix(&mut s.battery, self.source.as_ref());
             if s.battery.bix_success {
@@ -100,7 +61,7 @@ impl<S: Source + Send + 'static> Updater<S> {
 
         poll_bst(&mut s.battery, self.source.as_ref());
 
-        if update_graph && s.battery.bst_success {
+        if s.battery.bst_success {
             let cap = s.battery.bst.battery_remaining_capacity;
             trace!(
                 remaining_capacity = cap,
@@ -110,18 +71,54 @@ impl<S: Source + Send + 'static> Updater<S> {
             s.battery.samples.insert(cap);
             s.battery.t_min += 1;
         }
+    }
 
-        drop(s);
+    /// Run forever, updating once immediately then sleeping `interval` between
+    /// ticks.  Spawn as a [`tokio::task::spawn`] task.
+    pub async fn run(mut self, interval: Duration) {
+        info!(interval_ms = interval.as_millis(), "battery updater started");
+        self.update();
+        loop {
+            tokio::time::sleep(interval).await;
+            self.update();
+        }
+    }
+}
 
-        if update_graph {
-            self.last_graph_update = Some(now);
+// ── Thermal ───────────────────────────────────────────────────────────────────
+
+/// Polls temperature and fan metrics on every tick.
+/// Intended to run every 5 s.
+pub struct ThermalUpdater<S: Source> {
+    source: Arc<S>,
+    state: Arc<RwLock<AppState>>,
+    thermal_rx: mpsc::Receiver<ThermalCommand>,
+}
+
+impl<S: Source + Send + Sync + 'static> ThermalUpdater<S> {
+    pub fn new(
+        source: Arc<S>,
+        state: Arc<RwLock<AppState>>,
+        thermal_rx: mpsc::Receiver<ThermalCommand>,
+    ) -> Self {
+        Self { source, state, thermal_rx }
+    }
+
+    fn process_commands(&mut self) {
+        while let Ok(cmd) = self.thermal_rx.try_recv() {
+            let ThermalCommand::SetRpm(rpm) = cmd;
+            debug!(rpm, "processing SetRpm command");
+            if self.source.set_rpm(rpm).is_err() {
+                warn!(rpm, "failed to set fan RPM on hardware");
+            }
         }
     }
 
     #[tracing::instrument(skip_all)]
-    fn update_thermal(&mut self) {
-        // Fetch all thermal readings before acquiring the write lock so
-        // we hold the lock only for the short write phase.
+    fn update(&mut self) {
+        self.process_commands();
+
+        // Fetch before acquiring the write lock to minimise lock hold time.
         let temp = self.source.get_temperature();
         let rpm = self.source.get_rpm();
         let min_rpm = self.source.get_min_rpm();
@@ -144,7 +141,6 @@ impl<S: Source + Send + 'static> Updater<S> {
                 s.thermal.sensor.temp_success = false;
             }
         }
-        // Thresholds are hardcoded for now (see thermal.rs).
         s.thermal.sensor.thresholds = crate::thermal::sensor_thresholds();
         s.thermal.sensor.thresholds_success = true;
 
@@ -188,9 +184,33 @@ impl<S: Source + Send + 'static> Updater<S> {
         s.thermal.t += 1;
     }
 
+    pub async fn run(mut self, interval: Duration) {
+        info!(interval_ms = interval.as_millis(), "thermal updater started");
+        self.update();
+        loop {
+            tokio::time::sleep(interval).await;
+            self.update();
+        }
+    }
+}
+
+// ── RTC ───────────────────────────────────────────────────────────────────────
+
+/// Polls RTC time, capabilities, and timer state on every tick.
+/// Intended to run every 1 s.
+pub struct RtcUpdater<S: Source> {
+    source: Arc<S>,
+    state: Arc<RwLock<AppState>>,
+    rtc_caps_cached: bool,
+}
+
+impl<S: Source + Send + Sync + 'static> RtcUpdater<S> {
+    pub fn new(source: Arc<S>, state: Arc<RwLock<AppState>>) -> Self {
+        Self { source, state, rtc_caps_cached: false }
+    }
+
     #[tracing::instrument(skip_all)]
-    fn update_rtc(&mut self) {
-        // Capabilities are static — only fetch until we get a good read.
+    fn update(&mut self) {
         let caps = if self.rtc_caps_cached {
             None
         } else {
@@ -240,17 +260,47 @@ impl<S: Source + Send + 'static> Updater<S> {
         s.rtc.timers[1].timer_status = Some(dc_status.map_err(Into::into));
     }
 
-    // ── Public API ────────────────────────────────────────────────────────────
+    pub async fn run(mut self, interval: Duration) {
+        info!(interval_ms = interval.as_millis(), "RTC updater started");
+        self.update();
+        loop {
+            tokio::time::sleep(interval).await;
+            self.update();
+        }
+    }
+}
+
+// ── System ────────────────────────────────────────────────────────────────────
+
+/// Polls OS-level CPU, memory, and network metrics on every tick.
+/// Intended to run every 500 ms.
+pub struct SystemUpdater {
+    state: Arc<RwLock<AppState>>,
+    sys_info: sysinfo::System,
+    sys_nets: sysinfo::Networks,
+    last_update: Option<Instant>,
+}
+
+impl SystemUpdater {
+    pub fn new(state: Arc<RwLock<AppState>>) -> Self {
+        info!("initialising sysinfo");
+        Self {
+            state,
+            sys_info: sysinfo::System::new_all(),
+            sys_nets: sysinfo::Networks::new_with_refreshed_list(),
+            last_update: None,
+        }
+    }
 
     #[tracing::instrument(skip_all)]
-    fn update_system(&mut self) {
+    fn update(&mut self) {
         let now = Instant::now();
         let elapsed_secs = self
-            .last_system_update
+            .last_update
             .map(|t| now.duration_since(t).as_secs_f64())
             .unwrap_or(1.0)
             .max(0.001);
-        self.last_system_update = Some(now);
+        self.last_update = Some(now);
 
         self.sys_info.refresh_cpu_all();
         self.sys_info.refresh_memory();
@@ -273,11 +323,7 @@ impl<S: Source + Send + 'static> Updater<S> {
         s.system.memory.used_bytes = used;
         s.system.memory.swap_total_bytes = self.sys_info.total_swap();
         s.system.memory.swap_used_bytes = self.sys_info.used_swap();
-        let mem_pct = if total > 0 {
-            used as f64 / total as f64 * 100.0
-        } else {
-            0.0
-        };
+        let mem_pct = if total > 0 { used as f64 / total as f64 * 100.0 } else { 0.0 };
         s.system.memory.samples.insert(mem_pct);
         s.system.memory.success = true;
         trace!(used, total, "memory sampled");
@@ -306,21 +352,8 @@ impl<S: Source + Send + 'static> Updater<S> {
         s.system.t += 1;
     }
 
-    /// Drain pending commands and refresh all subsystems once.
-    #[tracing::instrument(skip_all)]
-    pub fn update(&mut self) {
-        debug!("update cycle start");
-        self.process_commands();
-        self.update_battery();
-        self.update_thermal();
-        self.update_rtc();
-        self.update_system();
-    }
-
-    /// Perform an initial fetch, then loop forever sleeping `interval` between
-    /// updates.  Intended to be called as a [`tokio::task::spawn`] task.
     pub async fn run(mut self, interval: Duration) {
-        info!(interval_ms = interval.as_millis(), "updater task started");
+        info!(interval_ms = interval.as_millis(), "system updater started");
         self.update();
         loop {
             tokio::time::sleep(interval).await;
