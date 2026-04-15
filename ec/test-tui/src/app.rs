@@ -94,6 +94,7 @@ pub struct App {
     shared_state: Arc<RwLock<AppState>>,
     log_buffer: LogBuffer,
     log_visible: bool,
+    log_scroll: usize,
 }
 
 impl App {
@@ -120,6 +121,7 @@ impl App {
             shared_state,
             log_buffer,
             log_visible: false,
+            log_scroll: 0,
         };
         info!("application initialized");
         app
@@ -157,11 +159,22 @@ impl App {
             match key.code {
                 KeyCode::Right => self.next_tab(),
                 KeyCode::Left => self.previous_tab(),
+                KeyCode::Up if self.log_visible => {
+                    self.log_scroll = self.log_scroll.saturating_add(1);
+                }
+                KeyCode::Down if self.log_visible => {
+                    self.log_scroll = self.log_scroll.saturating_sub(1);
+                }
                 KeyCode::Char('1') => self.selected_tab = SelectedTab::TabDashboard,
                 KeyCode::Char('2') => self.selected_tab = SelectedTab::TabBattery,
                 KeyCode::Char('3') => self.selected_tab = SelectedTab::TabThermal,
                 KeyCode::Char('4') => self.selected_tab = SelectedTab::TabRTC,
-                KeyCode::Char('l') => self.log_visible = !self.log_visible,
+                KeyCode::Char('l') => {
+                    self.log_visible = !self.log_visible;
+                    if self.log_visible {
+                        self.log_scroll = 0;
+                    }
+                }
                 KeyCode::Char('q') | KeyCode::Esc => self.quit(),
                 _ => self.handle_tab_event(&evt),
             }
@@ -286,9 +299,12 @@ impl App {
         let entries = self.log_buffer.entries();
         let visible_rows = area.height.saturating_sub(2) as usize;
 
-        let skip = entries.len().saturating_sub(visible_rows);
+        let max_scroll = entries.len().saturating_sub(visible_rows);
+        let scroll = self.log_scroll.min(max_scroll);
+        let skip = max_scroll.saturating_sub(scroll);
         let lines: Vec<Line<'_>> = entries[skip..]
             .iter()
+            .take(visible_rows)
             .map(|entry| {
                 Line::from(vec![
                     Span::styled(
@@ -300,10 +316,16 @@ impl App {
             })
             .collect();
 
+        let scroll_label = if scroll > 0 {
+            format!(" Logs [↑{scroll}] ")
+        } else {
+            " Logs ".to_owned()
+        };
+
         Paragraph::new(lines)
             .block(
                 Block::bordered()
-                    .title(Line::from(" Logs ").bold())
+                    .title(Line::from(scroll_label).bold())
                     .title(
                         Line::from(Span::styled(
                             " RUST_LOG=<level> ",
@@ -323,18 +345,22 @@ impl App {
             .bold();
         let desc = Style::default().fg(tailwind::SLATE.c500);
         let log_hint = if self.log_visible { " hide logs" } else { " show logs" };
-        Line::from(vec![
+        let mut spans = vec![
             Span::styled(" ◄ ► ", key),
             Span::styled(" switch tab  ", desc),
             Span::styled(" 1-4 ", key),
             Span::styled(" jump to tab  ", desc),
             Span::styled(" l ", key),
             Span::styled(log_hint, desc),
-            Span::styled("  q ", key),
-            Span::styled(" quit", desc),
-        ])
-        .centered()
-        .render(area, buf);
+        ];
+        if self.log_visible {
+            spans.extend([
+                Span::styled("  ↑ ↓ ", key),
+                Span::styled(" scroll logs  ", desc),
+            ]);
+        }
+        spans.extend([Span::styled("  q ", key), Span::styled(" quit", desc)]);
+        Line::from(spans).centered().render(area, buf);
     }
 }
 
