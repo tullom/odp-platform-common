@@ -70,6 +70,14 @@ impl TabModule {
             Self::System(m) => m.render_card(state, area, buf),
         }
     }
+
+    pub(crate) fn is_popup_open(&self) -> bool {
+        match self {
+            Self::Battery(m) => m.is_popup_open(),
+            Self::Thermal(m) => m.is_popup_open(),
+            Self::Rtc(_) | Self::System(_) => false,
+        }
+    }
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -162,6 +170,16 @@ impl App {
 
     fn handle_events(&mut self) -> std::io::Result<()> {
         let evt = event::read()?;
+
+        // If the active module has a popup open, route ALL events directly to
+        // the module — bypassing tab-switching shortcuts.
+        if let Some(i) = self.selected_tab.module_index()
+            && self.modules[i].is_popup_open()
+        {
+            self.modules[i].handle_event(&evt);
+            return Ok(());
+        }
+
         if let Event::Key(key) = evt
             && key.kind == KeyEventKind::Press
         {
@@ -368,6 +386,10 @@ impl App {
         ];
         if self.log_visible {
             spans.extend([Span::styled("  ↑ ↓ ", key), Span::styled(" scroll logs  ", desc)]);
+        }
+        let show_set = matches!(self.selected_tab, SelectedTab::TabBattery | SelectedTab::TabThermal);
+        if show_set {
+            spans.extend([Span::styled("  s ", key), Span::styled(" set value  ", desc)]);
         }
         spans.extend([Span::styled("  q ", key), Span::styled(" quit", desc)]);
         Line::from(spans).centered().render(area, buf);

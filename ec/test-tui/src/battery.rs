@@ -114,34 +114,55 @@ pub(crate) fn poll_bix(state: &mut BatteryState, source: &impl BatterySource) {
 /// Battery UI module.  Holds only UI-local state: the BTP text input and the
 /// command channel for sending write-backs to the background updater.
 pub struct Battery {
-    btp_input: Input,
+    popup_open: bool,
+    popup_input: Input,
     cmd_tx: mpsc::Sender<BatteryCommand>,
 }
 
 impl Battery {
     pub fn new(cmd_tx: mpsc::Sender<BatteryCommand>) -> Self {
         Self {
-            btp_input: Input::default(),
+            popup_open: false,
+            popup_input: Input::default(),
             cmd_tx,
         }
+    }
+
+    pub(crate) fn is_popup_open(&self) -> bool {
+        self.popup_open
     }
 }
 
 impl Battery {
     pub(crate) fn handle_event(&mut self, evt: &Event) {
         if let Event::Key(key) = evt
-            && key.code == KeyCode::Enter
             && key.kind == KeyEventKind::Press
         {
-            let raw = self.btp_input.value_and_reset();
-            if let Ok(btp) = raw.parse::<u32>() {
-                debug!(btp, "user requested battery trip-point change");
-                let _ = self.cmd_tx.send(BatteryCommand::SetBtp(btp));
-            } else {
-                warn!(input = raw, "invalid BTP value; expected a non-negative integer");
+            if self.popup_open {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.popup_open = false;
+                        self.popup_input = Input::default();
+                        debug!("BTP popup dismissed");
+                    }
+                    KeyCode::Enter => {
+                        let raw = self.popup_input.value_and_reset();
+                        self.popup_open = false;
+                        if let Ok(btp) = raw.parse::<u32>() {
+                            debug!(btp, "user requested battery trip-point change");
+                            let _ = self.cmd_tx.send(BatteryCommand::SetBtp(btp));
+                        } else {
+                            warn!(input = raw, "invalid BTP value; expected a non-negative integer");
+                        }
+                    }
+                    _ => {
+                        let _ = self.popup_input.handle_event(evt);
+                    }
+                }
+            } else if matches!(key.code, KeyCode::Char('s') | KeyCode::Char('/')) {
+                self.popup_open = true;
+                debug!("BTP set popup opened");
             }
-        } else {
-            let _ = self.btp_input.handle_event(evt);
         }
     }
 
@@ -153,6 +174,12 @@ impl Battery {
         self.render_status_strip(state, strip_area, buf);
         self.render_bix(state, bix_area, buf);
         self.render_bst_chart(state, chart_area, buf);
+
+        if self.popup_open {
+            let cap_unit = power_unit_as_capacity_str(state.battery.bix.power_unit);
+            let title = format!(" Set Battery Trippoint ({cap_unit}) ");
+            common::render_input_popup(area, buf, &title, self.popup_input.value());
+        }
     }
 
     pub(crate) fn render_card(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
@@ -460,14 +487,22 @@ impl Battery {
                 Text::raw("Swap Capability").add_modifier(Modifier::BOLD),
                 swap_cap_as_str(bat.bix.battery_swapping_capability).into(),
             ]),
+            Row::new(vec![
+                Text::styled("Trip Point", Style::default().add_modifier(Modifier::BOLD)),
+                Text::styled(
+                    format!("{} {}  ●", bat.btp, power_unit_as_capacity_str(bat.bix.power_unit),),
+                    Style::default().fg(if bat.btp_success {
+                        tailwind::GREEN.c400
+                    } else {
+                        tailwind::RED.c500
+                    }),
+                ),
+            ]),
         ]
     }
 
     fn render_bix(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        use Constraint::{Length, Min};
         let bat = &state.battery;
-        let [table_area, btp_area] = Layout::vertical([Min(0), Length(3u16)]).areas(area);
-
         let table = Table::new(self.bix_rows(bat), [Constraint::Min(22), Constraint::Fill(1)])
             .block(
                 Block::bordered()
@@ -475,34 +510,7 @@ impl Battery {
                     .fg(LABEL_COLOR),
             )
             .style(Style::new().white());
-        Widget::render(table, table_area, buf);
-
-        self.render_btp_input(bat, btp_area, buf);
-    }
-
-    fn render_btp_input(&self, bat: &BatteryState, area: Rect, buf: &mut Buffer) {
-        let width = area.width.max(3) - 3;
-        let scroll = self.btp_input.visual_scroll(width as usize);
-        let title = format!(
-            "Trippoint: {} {}  <set new value + Enter>",
-            bat.btp,
-            power_unit_as_capacity_str(bat.bix.power_unit)
-        );
-        let dot = if bat.btp_success {
-            Span::styled("● ", Style::default().fg(tailwind::GREEN.c400))
-        } else {
-            Span::styled("● ", Style::default().fg(tailwind::RED.c500))
-        };
-        let block_title = Line::from(vec![dot, Span::raw(title)]);
-
-        Paragraph::new(self.btp_input.value())
-            .scroll((0, scroll as u16))
-            .block(
-                Block::bordered()
-                    .title(block_title)
-                    .border_style(Style::default().fg(tailwind::SKY.c700)),
-            )
-            .render(area, buf);
+        Widget::render(table, area, buf);
     }
 }
 

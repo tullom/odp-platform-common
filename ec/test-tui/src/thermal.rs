@@ -137,34 +137,55 @@ fn fan_zone_color(rpm: f64, levels: &FanStateLevels) -> Color {
 /// Thermal UI module.  Holds only UI-local state: the fan RPM text input and
 /// the command channel for sending write-backs to the background updater.
 pub struct Thermal {
-    rpm_input: Input,
+    popup_open: bool,
+    popup_input: Input,
     cmd_tx: mpsc::Sender<ThermalCommand>,
 }
 
 impl Thermal {
     pub fn new(cmd_tx: mpsc::Sender<ThermalCommand>) -> Self {
         Self {
-            rpm_input: Input::default(),
+            popup_open: false,
+            popup_input: Input::default(),
             cmd_tx,
         }
+    }
+
+    pub(crate) fn is_popup_open(&self) -> bool {
+        self.popup_open
     }
 }
 
 impl Thermal {
     pub(crate) fn handle_event(&mut self, evt: &Event) {
         if let Event::Key(key) = evt
-            && key.code == KeyCode::Enter
             && key.kind == KeyEventKind::Press
         {
-            let raw = self.rpm_input.value_and_reset();
-            if let Ok(rpm) = raw.parse::<f64>() {
-                debug!(rpm, "user requested fan RPM change");
-                let _ = self.cmd_tx.send(ThermalCommand::SetRpm(rpm));
-            } else {
-                warn!(input = raw, "invalid fan RPM value; expected a number");
+            if self.popup_open {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.popup_open = false;
+                        self.popup_input = Input::default();
+                        debug!("RPM popup dismissed");
+                    }
+                    KeyCode::Enter => {
+                        let raw = self.popup_input.value_and_reset();
+                        self.popup_open = false;
+                        if let Ok(rpm) = raw.parse::<f64>() {
+                            debug!(rpm, "user requested fan RPM change");
+                            let _ = self.cmd_tx.send(ThermalCommand::SetRpm(rpm));
+                        } else {
+                            warn!(input = raw, "invalid fan RPM value; expected a number");
+                        }
+                    }
+                    _ => {
+                        let _ = self.popup_input.handle_event(evt);
+                    }
+                }
+            } else if matches!(key.code, KeyCode::Char('s') | KeyCode::Char('/')) {
+                self.popup_open = true;
+                debug!("RPM set popup opened");
             }
-        } else {
-            let _ = self.rpm_input.handle_event(evt);
         }
     }
 
@@ -172,6 +193,10 @@ impl Thermal {
         let [sensor_area, fan_area] = common::area_split(area, Direction::Horizontal, 50, 50);
         self.render_sensor(state, sensor_area, buf);
         self.render_fan(state, fan_area, buf);
+
+        if self.popup_open {
+            common::render_input_popup(area, buf, " Set Fan RPM Limit ", self.popup_input.value());
+        }
     }
 
     pub(crate) fn render_card(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
@@ -398,7 +423,8 @@ impl Thermal {
         block.render(area, buf);
 
         use Constraint::{Length, Min};
-        let [rpm_line, gauge_area, input_area] = Layout::vertical([Length(1), Length(1), Min(0)]).areas(inner);
+        let [rpm_line, gauge_area, limit_line, _rest] =
+            Layout::vertical([Length(1), Length(1), Length(1), Min(0)]).areas(inner);
 
         Paragraph::new(common::metric_row(
             "RPM  ",
@@ -423,7 +449,17 @@ impl Thermal {
         }
         .render(gauge_area, buf);
 
-        self.render_fan_rpm_input(input_area, buf);
+        let (limit_str, limit_color) = if state.thermal.rpm_limit > 0.0 {
+            let color = if state.thermal.rpm_set_success {
+                tailwind::GREEN.c400
+            } else {
+                tailwind::RED.c500
+            };
+            (format!("{:.0} RPM", state.thermal.rpm_limit), color)
+        } else {
+            ("—  (press s to set)".to_string(), tailwind::SLATE.c500)
+        };
+        common::metric_row("Limit", limit_str, limit_color).render(limit_line, buf);
     }
 
     fn render_fan_levels(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
@@ -444,20 +480,6 @@ impl Thermal {
         ])
         .block(block)
         .render(area, buf);
-    }
-
-    fn render_fan_rpm_input(&self, area: Rect, buf: &mut Buffer) {
-        let width = area.width.max(3) - 3;
-        let scroll = self.rpm_input.visual_scroll(width as usize);
-        Paragraph::new(self.rpm_input.value())
-            .style(Style::default())
-            .scroll((0, scroll as u16))
-            .block(
-                Block::bordered()
-                    .title("Set Fan RPM <ENTER>")
-                    .border_style(Style::default().fg(tailwind::ORANGE.c600)),
-            )
-            .render(area, buf);
     }
 }
 

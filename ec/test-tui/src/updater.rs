@@ -109,8 +109,15 @@ impl<S: Source + Send + Sync + 'static> ThermalUpdater<S> {
         while let Ok(cmd) = self.thermal_rx.try_recv() {
             let ThermalCommand::SetRpm(rpm) = cmd;
             debug!(rpm, "processing SetRpm command");
-            if self.source.set_rpm(rpm).is_err() {
+            let success = self.source.set_rpm(rpm).is_ok();
+            if success {
+                info!(rpm, "fan RPM limit set successfully");
+            } else {
                 warn!(rpm, "failed to set fan RPM on hardware");
+            }
+            if let Ok(mut s) = self.state.write() {
+                s.thermal.rpm_limit = rpm;
+                s.thermal.rpm_set_success = success;
             }
         }
     }

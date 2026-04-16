@@ -103,6 +103,10 @@ pub struct ThermalState {
     pub fan: FanData,
     /// Monotonic tick counter; used for graph x-axis labels.
     pub t: usize,
+    /// Last RPM limit set by the user via the set popup.
+    pub rpm_limit: f64,
+    /// Whether the most recent `set_rpm` call succeeded.
+    pub rpm_set_success: bool,
 }
 
 /// Write-back command from the thermal UI to the background updater.

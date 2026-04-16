@@ -4,7 +4,7 @@ use ratatui::{
     style::{Color, Style, Stylize, palette::tailwind},
     symbols,
     text::{Line, Span},
-    widgets::{Axis, Block, Chart, Dataset, GraphType, LineGauge, Padding, Widget},
+    widgets::{Axis, Block, Chart, Clear, Dataset, GraphType, LineGauge, Padding, Paragraph, Widget},
 };
 use std::collections::VecDeque;
 use std::sync::LazyLock;
@@ -184,6 +184,35 @@ impl Widget for ThresholdGauge<'_> {
             .ratio(self.ratio.clamp(0.0, 1.0))
             .render(area, buf);
     }
+}
+
+/// Render a centered input popup overlay.
+///
+/// Clears the area with [`Clear`] before rendering so the popup paints over
+/// whatever is already in the buffer at that position.
+pub fn render_input_popup(area: Rect, buf: &mut Buffer, title: &str, value: &str) {
+    let popup_w = 52u16.min(area.width);
+    let popup_h = 5u16;
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(popup_w) / 2,
+        y: area.y + area.height.saturating_sub(popup_h) / 2,
+        width: popup_w,
+        height: popup_h,
+    };
+    Clear.render(popup, buf);
+    let block = Block::bordered()
+        .title(Line::from(title).bold().centered())
+        .title_bottom(
+            Line::from(Span::styled(
+                " Enter  confirm    Esc  cancel ",
+                Style::default().fg(tailwind::SLATE.c500),
+            ))
+            .centered(),
+        )
+        .border_style(tailwind::YELLOW.c500);
+    let inner = block.inner(popup);
+    block.render(popup, buf);
+    Paragraph::new(format!("> {value}")).render(inner, buf);
 }
 
 /// Minimal test doubles shared across module test suites.
