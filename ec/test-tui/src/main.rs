@@ -1,21 +1,29 @@
 mod app;
 mod battery;
 mod common;
+mod logging;
 mod rtc;
+mod state;
+mod system;
 mod thermal;
-mod ucsi;
+mod updater;
 mod widgets;
 
-use std::time::Duration;
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex, RwLock},
+    time::Duration,
+};
 
 use clap::Parser;
+use tracing_subscriber::{EnvFilter, prelude::*};
 
 /// ODP Embedded Controller demo TUI.
 #[derive(Parser)]
 #[command(about, version)]
 struct Cli {
     /// Data source to use.
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, default_value_t = SourceKind::default())]
     source: SourceKind,
 
     /// Serial port path (required when --source serial).
@@ -38,22 +46,34 @@ struct Cli {
     #[arg(long, default_value_t = 0)]
     fan_instance: u8,
 
-    /// Battery graph sample period in seconds.
-    /// Defaults to 1 for mock sources and 60 for real hardware.
+    /// Write logs to this file in addition to the in-app log panel.
     #[arg(long)]
-    sample_period: Option<u64>,
+    log_file: Option<PathBuf>,
 }
 
 /// Available data sources (only variants whose feature is compiled in are shown).
-#[derive(clap::ValueEnum, Clone, Copy)]
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Default)]
 enum SourceKind {
     /// Deterministic in-process mock — no hardware required.
     Mock,
     /// Real hardware via serial transport.
+    #[cfg_attr(not(target_os = "windows"), default)]
     Serial,
     #[cfg(target_os = "windows")]
-    /// Real hardware via ACPI (aarch64-pc-windows-msvc only).
-    Acpi,
+    /// Real hardware via the local OS interface (Windows ACPI).
+    #[default]
+    Local,
+}
+
+impl std::fmt::Display for SourceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Mock => write!(f, "mock"),
+            Self::Serial => write!(f, "serial"),
+            #[cfg(target_os = "windows")]
+            Self::Local => write!(f, "local"),
+        }
+    }
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Default)]
@@ -65,31 +85,88 @@ enum FlowControl {
     Hardware,
 }
 
-fn main() -> color_eyre::Result<()> {
+#[tokio::main]
+async fn main() -> color_eyre::Result<()> {
+    let cli = Cli::parse();
+
+    // Build an optional file layer when --log-file is supplied.
+    let file_layer: Option<_> = cli
+        .log_file
+        .as_ref()
+        .map(|path| -> color_eyre::Result<_> {
+            let file = std::fs::File::create(path)?;
+            Ok(tracing_subscriber::fmt::layer().with_writer(Mutex::new(file)))
+        })
+        .transpose()?;
+
+    let log_buffer = logging::LogBuffer::new();
+
+    // Default to WARN when RUST_LOG is not set so the panel isn't flooded.
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(logging::TuiLayer::new(log_buffer.clone()))
+        .with(file_layer)
+        .init();
+
     color_eyre::install()?;
 
-    let cli = Cli::parse();
+    tracing::debug!("Starting EC test TUI with source: '{:?}'", cli.source);
+
     let terminal = ratatui::init();
 
     match cli.source {
-        SourceKind::Mock => {
-            let period = Duration::from_secs(cli.sample_period.unwrap_or(1));
-            app::App::new(ec_test_lib::mock::Mock::default(), period).run(terminal)
-        }
+        SourceKind::Mock => run_with_source(ec_test_lib::mock::Mock::default(), log_buffer, terminal),
 
         SourceKind::Serial => {
             let port = cli.port.expect("--port is required for --source serial");
             let hw_flow = matches!(cli.flow_control, FlowControl::Hardware);
             let source =
                 ec_test_lib::serial::Serial::new(&port, cli.baud, hw_flow, cli.sensor_instance, cli.fan_instance)?;
-            let period = Duration::from_secs(cli.sample_period.unwrap_or(60));
-            app::App::new(source, period).run(terminal)
+            run_with_source(source, log_buffer, terminal)
         }
 
         #[cfg(target_os = "windows")]
-        SourceKind::Acpi => {
-            let period = Duration::from_secs(cli.sample_period.unwrap_or(60));
-            app::App::new(ec_test_lib::acpi::Acpi::new(cli.fan_instance), period).run(terminal)
-        }
+        SourceKind::Local => run_with_source(ec_test_lib::acpi::Acpi::new(cli.fan_instance), log_buffer, terminal),
     }
+}
+
+/// Update periods — hardcoded, not user-configurable.
+const BATTERY_PERIOD: Duration = Duration::from_secs(1);
+const THERMAL_PERIOD: Duration = Duration::from_secs(1);
+const RTC_PERIOD: Duration = Duration::from_secs(1);
+const SYSTEM_PERIOD: Duration = Duration::from_millis(500);
+
+fn run_with_source<S>(
+    source: S,
+    log_buffer: logging::LogBuffer,
+    terminal: ratatui::DefaultTerminal,
+) -> color_eyre::Result<()>
+where
+    S: ec_test_lib::Source + Send + Sync + 'static,
+{
+    let shared_state = Arc::new(RwLock::new(state::AppState::default()));
+    let (battery_tx, battery_rx) = std::sync::mpsc::channel::<state::BatteryCommand>();
+    let (thermal_tx, thermal_rx) = std::sync::mpsc::channel::<state::ThermalCommand>();
+    let source = Arc::new(source);
+
+    tokio::task::spawn({
+        let upd = updater::BatteryUpdater::new(Arc::clone(&source), Arc::clone(&shared_state), battery_rx);
+        async move { upd.run(BATTERY_PERIOD).await }
+    });
+    tokio::task::spawn({
+        let upd = updater::ThermalUpdater::new(Arc::clone(&source), Arc::clone(&shared_state), thermal_rx);
+        async move { upd.run(THERMAL_PERIOD).await }
+    });
+    tokio::task::spawn({
+        let upd = updater::RtcUpdater::new(Arc::clone(&source), Arc::clone(&shared_state));
+        async move { upd.run(RTC_PERIOD).await }
+    });
+    tokio::task::spawn({
+        let upd = updater::SystemUpdater::new(Arc::clone(&shared_state));
+        async move { upd.run(SYSTEM_PERIOD).await }
+    });
+
+    app::App::new(shared_state, battery_tx, thermal_tx, log_buffer).run(terminal)
 }

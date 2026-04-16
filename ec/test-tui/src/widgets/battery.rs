@@ -132,7 +132,11 @@ impl StatefulWidget for Battery {
             .max(100)
             .bar_gap(0)
             .bar_style(Style::default().fg(color))
-            .block(Block::default().borders(Borders::ALL).border_type(BorderType::Double))
+            .block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(color)),
+            )
             .bar_width(battery_area.width - 2)
             .render(battery_area, buf);
 
@@ -145,9 +149,10 @@ impl StatefulWidget for Battery {
             height: tip_area.height,
         };
 
-        Block::default()
+        Block::bordered()
             .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
-            .border_type(BorderType::Double)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(color))
             .render(tip_area, buf);
 
         if state.is_charging {

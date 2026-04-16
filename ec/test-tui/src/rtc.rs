@@ -1,175 +1,268 @@
 use crate::common;
-use crossterm::event::Event;
+use crate::state::{AppState, Fetched, TimerData};
 use embedded_mcu_hal::time::Datetime;
 use ratatui::{
+    buffer::Buffer,
+    crossterm::event::Event,
+    layout::{Constraint, Layout, Rect},
     prelude::*,
-    style::{Color, palette::tailwind},
-    widgets::Paragraph,
+    style::{Color, Style, Stylize, palette::tailwind},
+    text::{Line, Span},
+    widgets::{Block, Paragraph},
 };
-use std::sync::Arc;
 use time_alarm_service_messages::{
-    AcpiDaylightSavingsTimeStatus, AcpiTimeZone, AcpiTimerId, AcpiTimestamp, AlarmExpiredWakePolicy, AlarmTimerSeconds,
-    TimeAlarmDeviceCapabilities, TimerStatus,
+    AcpiDaylightSavingsTimeStatus, AcpiTimeZone, AcpiTimerId, AlarmExpiredWakePolicy, AlarmTimerSeconds,
+    TimeAlarmDeviceCapabilities,
 };
 
-use crate::app::Module;
-use ec_test_lib::RtcSource;
+const LABEL_COLOR: Color = tailwind::VIOLET.c300;
 
-const LABEL_COLOR: Color = tailwind::SLATE.c200;
+// ── TimerData render helpers ──────────────────────────────────────────────────
 
-/// `None` = not yet fetched, `Some(Ok(v))` = success, `Some(Err(e))` = fetch failed.
-pub(crate) type Fetched<T> = Option<color_eyre::Result<T>>;
-
-mod rtc_timer {
-    use super::*;
-    pub struct RtcTimer {
-        timer_id: AcpiTimerId,
-
-        value: Fetched<AlarmTimerSeconds>,
-        wake_policy: Fetched<AlarmExpiredWakePolicy>,
-        timer_status: Fetched<TimerStatus>,
-    }
-
-    impl RtcTimer {
-        pub fn update(&mut self, source: &impl RtcSource) {
-            self.value = Some(source.get_timer_value(self.timer_id).map_err(Into::into));
-            self.wake_policy = Some(source.get_expired_timer_wake_policy(self.timer_id).map_err(Into::into));
-            self.timer_status = Some(source.get_wake_status(self.timer_id).map_err(Into::into));
-        }
-
-        pub fn new(timer_id: AcpiTimerId) -> Self {
-            Self {
-                timer_id,
-                value: None,
-                wake_policy: None,
-                timer_status: None,
+impl TimerData {
+    /// One-line summary for the dashboard card.
+    pub(crate) fn summary(&self) -> String {
+        match &self.value {
+            None => "Pending...".to_string(),
+            Some(Err(_)) => "Error".to_string(),
+            Some(Ok(v)) => {
+                let time_part = match *v {
+                    AlarmTimerSeconds::DISABLED => "Not set".to_string(),
+                    s => format!("{}s remaining", s.0),
+                };
+                let expired = match &self.timer_status {
+                    Some(Ok(s)) if s.timer_expired() => "  \u{26a0} expired",
+                    _ => "",
+                };
+                format!("{time_part}{expired}")
             }
         }
-
-        pub fn render(&self, title: &str, area: Rect, buf: &mut Buffer) {
-            let is_healthy = matches!(self.value, Some(Ok(_)))
-                && matches!(self.wake_policy, Some(Ok(_)))
-                && matches!(self.timer_status, Some(Ok(_)));
-            let title = common::title_str_with_status(title, is_healthy);
-
-            Paragraph::new(vec![
-                Line::raw(format_option_result(
-                    "Time remaining: ",
-                    &self.value,
-                    |value| match *value {
-                        AlarmTimerSeconds::DISABLED => "Timer not set".to_string(),
-                        seconds => format!("{} seconds", seconds.0),
-                    },
-                )),
-                Line::raw(format_option_result(
-                    "Wake policy:    ",
-                    &self.wake_policy,
-                    |wake_policy| match *wake_policy {
-                        AlarmExpiredWakePolicy::NEVER => "never".to_string(),
-                        AlarmExpiredWakePolicy::INSTANTLY => "instantly".to_string(),
-                        wake_policy => format!("after {} seconds", wake_policy.0),
-                    },
-                )),
-                Line::raw(format_option_result(
-                    "Timer status:   ",
-                    &self.timer_status,
-                    |timer_status| {
-                        format!(
-                            "{}, {}",
-                            if timer_status.timer_expired() {
-                                "expired".to_string()
-                            } else {
-                                "not expired".to_string()
-                            },
-                            if timer_status.timer_triggered_wake() {
-                                "triggered wake".to_string()
-                            } else {
-                                "did not trigger wake".to_string()
-                            }
-                        )
-                    },
-                )),
-            ])
-            .block(common::title_block(&title, 0, LABEL_COLOR))
-            .render(area, buf);
-        }
     }
 
-    fn format_option_result<T>(label: &str, opt: &Fetched<T>, f: impl FnOnce(&T) -> String) -> String {
-        match opt {
-            None => format!("{label}Pending..."),
-            Some(Ok(value)) => format!("{label}{}", f(value)),
-            Some(Err(err)) => format!("{label}Error: {err}"),
-        }
+    pub(crate) fn render_panel(&self, title: &str, area: Rect, buf: &mut Buffer) {
+        let is_healthy = matches!(self.value, Some(Ok(_)))
+            && matches!(self.wake_policy, Some(Ok(_)))
+            && matches!(self.timer_status, Some(Ok(_)));
+
+        Paragraph::new(vec![
+            Line::raw(format_option_result(
+                "Time remaining: ",
+                &self.value,
+                |value| match *value {
+                    AlarmTimerSeconds::DISABLED => "Timer not set".to_string(),
+                    seconds => format!("{} seconds", seconds.0),
+                },
+            )),
+            Line::raw(format_option_result(
+                "Wake policy:    ",
+                &self.wake_policy,
+                |wake_policy| match *wake_policy {
+                    AlarmExpiredWakePolicy::NEVER => "never".to_string(),
+                    AlarmExpiredWakePolicy::INSTANTLY => "instantly".to_string(),
+                    wake_policy => format!("after {} seconds", wake_policy.0),
+                },
+            )),
+            Line::raw(format_option_result(
+                "Timer status:   ",
+                &self.timer_status,
+                |timer_status| {
+                    format!(
+                        "{}, {}",
+                        if timer_status.timer_expired() {
+                            "expired"
+                        } else {
+                            "not expired"
+                        },
+                        if timer_status.timer_triggered_wake() {
+                            "triggered wake"
+                        } else {
+                            "did not trigger wake"
+                        }
+                    )
+                },
+            )),
+        ])
+        .block(common::title_block(
+            common::status_title(title, is_healthy),
+            0,
+            LABEL_COLOR,
+        ))
+        .render(area, buf);
     }
 }
 
-use rtc_timer::RtcTimer;
+// ── UI module ─────────────────────────────────────────────────────────────────
 
-pub struct Rtc<S: RtcSource> {
-    source: Arc<S>,
-    timers: [RtcTimer; 2],
+/// RTC UI module — stateless; all data is read from [`AppState`].
+pub struct Rtc;
 
-    capabilities: Fetched<TimeAlarmDeviceCapabilities>,
-    timestamp: Fetched<AcpiTimestamp>,
+impl Rtc {
+    pub fn new() -> Self {
+        Self
+    }
 }
 
-impl<S: RtcSource> Module for Rtc<S> {
-    fn title(&self) -> &'static str {
-        "RTC Information"
+impl Rtc {
+    pub(crate) fn handle_event(&mut self, _evt: &Event) {}
+
+    pub(crate) fn render(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+        use Constraint::{Length, Min, Percentage};
+
+        let rtc = &state.rtc;
+        let is_healthy = matches!(rtc.capabilities, Some(Ok(_))) && matches!(rtc.timestamp, Some(Ok(_)));
+
+        let [time_area, bottom_area] = Layout::vertical([Length(5), Min(0)]).areas(area);
+        let [caps_area, timers_area] = Layout::horizontal([Percentage(50), Percentage(50)]).areas(bottom_area);
+        let [ac_area, dc_area] = Layout::vertical([Percentage(50), Percentage(50)]).areas(timers_area);
+
+        self.render_time_display(state, time_area, buf, is_healthy);
+        self.render_capabilities(state, caps_area, buf);
+        rtc.timers[AcpiTimerId::AcPower as usize].render_panel("AC Power Timer", ac_area, buf);
+        rtc.timers[AcpiTimerId::DcPower as usize].render_panel("DC Power Timer", dc_area, buf);
     }
 
-    fn update(&mut self) {
-        // Capabilities are static — keep retrying until we get a successful read.
-        if !matches!(self.capabilities, Some(Ok(_))) {
-            self.capabilities = Some(self.source.get_capabilities().map_err(Into::into));
-        }
-        self.timestamp = Some(self.source.get_real_time().map_err(Into::into));
-        for timer in &mut self.timers {
-            timer.update(&self.source);
-        }
+    pub(crate) fn render_card(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+        use Constraint::{Length, Min};
+
+        let rtc = &state.rtc;
+        let is_healthy = matches!(rtc.timestamp, Some(Ok(_)));
+
+        let block = Block::bordered()
+            .title(common::status_title("RTC", is_healthy))
+            .border_style(tailwind::VIOLET.c700);
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        let [time_area, meta_area, divider_area, timers_area] =
+            Layout::vertical([Length(2), Length(2), Length(1), Min(0)]).areas(inner);
+
+        // Time + date
+        let (time_str, date_str, tz_str, dst_str) = match &rtc.timestamp {
+            Some(Ok(ts)) => (
+                format_time_hms(ts.datetime),
+                format_date(ts.datetime),
+                format_time_zone(ts.time_zone),
+                format!("DST: {}", format_dst(ts.dst_status)),
+            ),
+            Some(Err(_)) => ("Error".into(), String::new(), String::new(), String::new()),
+            None => ("Pending".into(), String::new(), String::new(), String::new()),
+        };
+
+        Paragraph::new(vec![
+            Line::from(Span::styled(time_str, Style::default().fg(Color::White).bold())),
+            Line::from(Span::styled(date_str, Style::default().fg(tailwind::VIOLET.c300))),
+        ])
+        .render(time_area, buf);
+
+        let accuracy_str = match &rtc.capabilities {
+            Some(Ok(caps)) => {
+                if caps.realtime_accuracy_in_milliseconds() {
+                    "ms accuracy"
+                } else {
+                    "s accuracy"
+                }
+            }
+            _ => "",
+        };
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(tz_str, Style::default().fg(tailwind::SLATE.c400)),
+                Span::raw("  "),
+                Span::styled(dst_str, Style::default().fg(tailwind::SLATE.c500)),
+            ]),
+            Line::from(Span::styled(accuracy_str, Style::default().fg(tailwind::SLATE.c600))),
+        ])
+        .render(meta_area, buf);
+
+        Line::from(Span::styled(
+            "\u{2500}\u{2500}\u{2500} Timers \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+            Style::default().fg(tailwind::SLATE.c700),
+        ))
+        .render(divider_area, buf);
+
+        Paragraph::new(vec![
+            timer_summary_line("AC", &rtc.timers[AcpiTimerId::AcPower as usize]),
+            timer_summary_line("DC", &rtc.timers[AcpiTimerId::DcPower as usize]),
+        ])
+        .render(timers_area, buf);
     }
+}
 
-    fn handle_event(&mut self, _evt: &Event) {}
+// ── Render helpers ────────────────────────────────────────────────────────────
 
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        let is_healthy = matches!(self.capabilities, Some(Ok(_))) && matches!(self.timestamp, Some(Ok(_)));
-        let title = common::title_str_with_status("Real-time Clock", is_healthy);
-        let title = common::title_block(&title, 0, LABEL_COLOR);
+impl Rtc {
+    fn render_time_display(&self, state: &AppState, area: Rect, buf: &mut Buffer, is_healthy: bool) {
+        let block = Block::bordered()
+            .title(common::status_title("Real-Time Clock", is_healthy))
+            .border_style(tailwind::VIOLET.c600);
+        let inner = block.inner(area);
+        block.render(area, buf);
 
-        let [general_area, timers_area] = common::area_split(area, Direction::Vertical, 70, 30);
-        let [ac_area, dc_area] = common::area_split(timers_area, Direction::Horizontal, 50, 50);
-
-        let time_messages = match &self.timestamp {
-            None => vec!["RTC time not yet retrieved".to_string()],
-            Some(Ok(timestamp)) => vec![
-                format!("Time:      {}", format_time(timestamp.datetime)),
-                format!("Time Zone: {}", format_time_zone(timestamp.time_zone)),
-                format!("DST:       {}", format_dst(timestamp.dst_status)),
-                "".to_string(),
+        let lines: Vec<Line<'_>> = match &state.rtc.timestamp {
+            None => vec![Line::raw("Pending...")],
+            Some(Err(e)) => vec![Line::raw(format!("Error: {e}"))],
+            Some(Ok(ts)) => vec![
+                Line::from(Span::styled(
+                    format_time_hms(ts.datetime),
+                    Style::default().fg(Color::White).bold(),
+                ))
+                .centered(),
+                Line::from(Span::styled(
+                    format_date(ts.datetime),
+                    Style::default().fg(tailwind::VIOLET.c300),
+                ))
+                .centered(),
+                Line::from(vec![
+                    Span::styled(
+                        format_time_zone(ts.time_zone),
+                        Style::default().fg(tailwind::SLATE.c400),
+                    ),
+                    Span::raw("  \u{b7}  DST: "),
+                    Span::styled(format_dst(ts.dst_status), Style::default().fg(tailwind::SLATE.c400)),
+                ])
+                .centered(),
             ],
-            Some(Err(err)) => vec![format!("Error retrieving RTC time: {}", err)],
         };
-
-        let capabilities_messages: Vec<String> = match &self.capabilities {
-            None => vec!["RTC capabilities not yet retrieved".to_string()],
-            Some(Ok(capabilities)) => format_capabilities(capabilities),
-            Some(Err(err)) => vec![format!("Error retrieving RTC capabilities: {}", err)],
-        };
-
-        let all_messages: Vec<Line<'_>> = time_messages
-            .into_iter()
-            .chain(capabilities_messages)
-            .map(Line::raw)
-            .collect();
-
-        Paragraph::new(all_messages).block(title).render(general_area, buf);
-
-        self.get_timer(AcpiTimerId::AcPower)
-            .render("AC Power Timer", ac_area, buf);
-        self.get_timer(AcpiTimerId::DcPower)
-            .render("DC Power Timer", dc_area, buf);
+        Paragraph::new(lines).render(inner, buf);
     }
+
+    fn render_capabilities(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+        let lines: Vec<Line<'_>> = match &state.rtc.capabilities {
+            None => vec![Line::raw("Pending...")],
+            Some(Err(e)) => vec![Line::raw(format!("Error: {e}"))],
+            Some(Ok(caps)) => format_capabilities(caps).into_iter().map(Line::raw).collect(),
+        };
+        let is_ok = matches!(state.rtc.capabilities, Some(Ok(_)));
+        Paragraph::new(lines)
+            .block(
+                Block::bordered()
+                    .title(common::status_title("Capabilities", is_ok))
+                    .border_style(tailwind::VIOLET.c800),
+            )
+            .render(area, buf);
+    }
+}
+
+// ── Free helper functions ─────────────────────────────────────────────────────
+
+fn timer_summary_line<'a>(label: &'a str, timer: &TimerData) -> Line<'a> {
+    common::metric_row(label, timer.summary(), tailwind::VIOLET.c400)
+}
+
+fn format_option_result<T>(label: &str, opt: &Fetched<T>, f: impl FnOnce(&T) -> String) -> String {
+    match opt {
+        None => format!("{label}Pending..."),
+        Some(Ok(value)) => format!("{label}{}", f(value)),
+        Some(Err(err)) => format!("{label}Error: {err}"),
+    }
+}
+
+fn format_time_hms(time: Datetime) -> String {
+    format!("{:02}:{:02}:{:02}", time.hour(), time.minute(), time.second())
+}
+
+fn format_date(time: Datetime) -> String {
+    format!("{:04}-{:02}-{:02}", time.year(), u8::from(time.month()), time.day())
 }
 
 fn format_dst(dst: AcpiDaylightSavingsTimeStatus) -> &'static str {
@@ -229,6 +322,18 @@ fn format_capabilities(capabilities: &TimeAlarmDeviceCapabilities) -> Vec<String
     ]
 }
 
+fn format_time_zone(tz: AcpiTimeZone) -> String {
+    match tz {
+        AcpiTimeZone::Unknown => "Unknown".to_string(),
+        AcpiTimeZone::MinutesFromUtc(offset) => format!(
+            "UTC{:+03}:{:02}",
+            offset.minutes_from_utc() / 60,
+            offset.minutes_from_utc().abs() % 60
+        ),
+    }
+}
+
+#[cfg(test)]
 fn format_time(time: Datetime) -> String {
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
@@ -241,34 +346,7 @@ fn format_time(time: Datetime) -> String {
     )
 }
 
-fn format_time_zone(tz: AcpiTimeZone) -> String {
-    match tz {
-        AcpiTimeZone::Unknown => "Unknown".to_string(),
-        AcpiTimeZone::MinutesFromUtc(offset) => format!(
-            "UTC{:+03}:{:02}",
-            offset.minutes_from_utc() / 60,
-            offset.minutes_from_utc().abs() % 60
-        ),
-    }
-}
-
-impl<S: RtcSource> Rtc<S> {
-    pub fn new(source: Arc<S>) -> Self {
-        let mut result = Self {
-            source,
-            capabilities: None,
-            timestamp: None,
-            timers: [RtcTimer::new(AcpiTimerId::AcPower), RtcTimer::new(AcpiTimerId::DcPower)],
-        };
-
-        result.update();
-        result
-    }
-
-    fn get_timer(&self, timer_id: AcpiTimerId) -> &RtcTimer {
-        &self.timers[timer_id as usize]
-    }
-}
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -353,8 +431,6 @@ mod tests {
     fn format_capabilities_all_not_supported_when_zero() {
         let caps = TimeAlarmDeviceCapabilities(0);
         let lines = format_capabilities(&caps);
-        // The accuracy entry (index 3) uses "Seconds"/"Milliseconds" — skip it.
-        // All other data entries should say "Not Supported".
         for (i, line) in lines[1..].iter().enumerate() {
             if line.contains("Accuracy") {
                 assert!(line.contains("Seconds"), "accuracy line unexpected: {line}");

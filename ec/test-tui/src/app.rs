@@ -1,51 +1,87 @@
 use crate::battery::Battery;
+use crate::logging::LogBuffer;
 use crate::rtc::Rtc;
+use crate::state::{AppState, BatteryCommand, ThermalCommand};
+use crate::system::System;
 use crate::thermal::Thermal;
-use crate::ucsi::Ucsi;
-use ec_test_lib::Source;
 
 use color_eyre::Result;
+use tracing::{Level, debug, info};
 
 use ratatui::{
     DefaultTerminal,
     buffer::Buffer,
     crossterm::event::{self, Event, KeyCode, KeyEventKind},
     layout::{Constraint, Layout, Rect},
-    style::{Color, Stylize, palette::tailwind},
-    symbols,
-    text::Line,
-    widgets::{Block, Padding, Tabs, Widget},
+    style::{Color, Style, Stylize, palette::tailwind},
+    text::{Line, Span},
+    widgets::{Block, Padding, Paragraph, Tabs, Widget},
 };
 
 use std::{
-    collections::BTreeMap,
-    sync::Arc,
+    sync::{Arc, RwLock, mpsc},
     time::{Duration, Instant},
 };
 
 use strum::{Display, EnumIter, FromRepr, IntoEnumIterator};
 
-/// Internal trait to be implemented by modules (or Tabs).
-pub(crate) trait Module {
-    /// The module's title.
-    fn title(&self) -> &'static str;
+/// Enum wrapping all UI modules.  Methods dispatch to the concrete type
+/// without dynamic dispatch or heap allocation.
+pub(crate) enum TabModule {
+    Battery(Battery),
+    Thermal(Thermal),
+    Rtc(Rtc),
+    System(System),
+}
 
-    /// Poll the data source and refresh internal state.
-    ///
-    /// Returns `()` intentionally: each module tracks failures via internal
-    /// success flags so the UI can display error states rather than crashing.
-    /// If a future need arises, this signature could change to `Result<()>`.
-    fn update(&mut self);
+impl TabModule {
+    pub(crate) fn title(&self) -> &'static str {
+        match self {
+            Self::Battery(_) => "Battery Information",
+            Self::Thermal(_) => "Thermal Information",
+            Self::Rtc(_) => "RTC Information",
+            Self::System(_) => "System Information",
+        }
+    }
 
-    /// Handle input event.
-    fn handle_event(&mut self, evt: &Event);
+    pub(crate) fn handle_event(&mut self, evt: &Event) {
+        match self {
+            Self::Battery(m) => m.handle_event(evt),
+            Self::Thermal(m) => m.handle_event(evt),
+            Self::Rtc(m) => m.handle_event(evt),
+            Self::System(m) => m.handle_event(evt),
+        }
+    }
 
-    /// Render the module.
-    fn render(&self, area: Rect, buf: &mut Buffer);
+    pub(crate) fn render(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+        match self {
+            Self::Battery(m) => m.render(state, area, buf),
+            Self::Thermal(m) => m.render(state, area, buf),
+            Self::Rtc(m) => m.render(state, area, buf),
+            Self::System(m) => m.render(state, area, buf),
+        }
+    }
+
+    pub(crate) fn render_card(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+        match self {
+            Self::Battery(m) => m.render_card(state, area, buf),
+            Self::Thermal(m) => m.render_card(state, area, buf),
+            Self::Rtc(m) => m.render_card(state, area, buf),
+            Self::System(m) => m.render_card(state, area, buf),
+        }
+    }
+
+    pub(crate) fn is_popup_open(&self) -> bool {
+        match self {
+            Self::Battery(m) => m.is_popup_open(),
+            Self::Thermal(m) => m.is_popup_open(),
+            Self::Rtc(_) | Self::System(_) => false,
+        }
+    }
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
-enum AppState {
+enum RunState {
     #[default]
     Running,
     Quitting,
@@ -54,79 +90,120 @@ enum AppState {
 #[derive(Default, Clone, Copy, Display, FromRepr, EnumIter, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum SelectedTab {
     #[default]
+    #[strum(to_string = "Dashboard")]
+    TabDashboard,
     #[strum(to_string = "Battery")]
     TabBattery,
     #[strum(to_string = "Thermal")]
     TabThermal,
     #[strum(to_string = "RTC")]
     TabRTC,
-    #[strum(to_string = "UCSI")]
-    TabUCSI,
+    #[strum(to_string = "System")]
+    TabSystem,
 }
 
-/// The main application which holds the state and logic of the application.
+/// The main application: holds UI state and a read handle on the shared data.
 pub struct App {
-    state: AppState,
+    run_state: RunState,
     selected_tab: SelectedTab,
-    modules: BTreeMap<SelectedTab, Box<dyn Module>>,
+    modules: [TabModule; 4],
+    shared_state: Arc<RwLock<AppState>>,
+    log_buffer: LogBuffer,
+    log_visible: bool,
+    log_scroll: usize,
 }
 
 impl App {
-    /// Construct a new instance of [`App`] from any source type.
-    pub fn new<S: Source + 'static>(source: S, battery_graph_interval: Duration) -> Self {
-        let mut modules: BTreeMap<SelectedTab, Box<dyn Module>> = BTreeMap::new();
-        let source = Arc::new(source);
+    /// Construct the application.
+    ///
+    /// * `shared_state` — populated by the background updater thread.
+    /// * `battery_tx` / `thermal_tx` — command channels for hardware write-backs.
+    pub fn new(
+        shared_state: Arc<RwLock<AppState>>,
+        battery_tx: mpsc::Sender<BatteryCommand>,
+        thermal_tx: mpsc::Sender<ThermalCommand>,
+        log_buffer: LogBuffer,
+    ) -> Self {
+        let modules = [
+            TabModule::Battery(Battery::new(battery_tx)),
+            TabModule::Thermal(Thermal::new(thermal_tx)),
+            TabModule::Rtc(Rtc::new()),
+            TabModule::System(System::new()),
+        ];
 
-        modules.insert(SelectedTab::TabThermal, Box::new(Thermal::new(Arc::clone(&source))));
-        modules.insert(SelectedTab::TabRTC, Box::new(Rtc::new(Arc::clone(&source))));
-        modules.insert(SelectedTab::TabUCSI, Box::new(Ucsi::new()));
-
-        let battery = Battery::new(Arc::clone(&source)).with_graph_sample_interval(battery_graph_interval);
-        modules.insert(SelectedTab::TabBattery, Box::new(battery));
-
-        Self {
-            state: Default::default(),
+        let app = Self {
+            run_state: Default::default(),
             selected_tab: Default::default(),
             modules,
-        }
+            shared_state,
+            log_buffer,
+            log_visible: false,
+            log_scroll: 0,
+        };
+        info!("application initialized");
+        app
     }
 
     /// Run the application's main loop.
     pub fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
-        let tick_rate = Duration::from_millis(1000);
+        let tick_rate = Duration::from_millis(250);
         let mut last_tick = Instant::now();
 
-        while self.state == AppState::Running {
+        info!("entering main loop");
+
+        while self.run_state == RunState::Running {
             terminal.draw(|frame| frame.render_widget(&self, frame.area()))?;
 
-            // Adjust timeout to account for delay from handling input
             let timeout = tick_rate.saturating_sub(last_tick.elapsed());
-
-            // Handle event if we got it, and only update tab states if we timed out
             if event::poll(timeout)? {
                 self.handle_events()?;
             }
 
             if last_tick.elapsed() >= tick_rate {
-                self.update_tabs();
                 last_tick = Instant::now();
             }
         }
 
+        info!("exiting main loop");
         Ok(())
     }
 
     fn handle_events(&mut self) -> std::io::Result<()> {
         let evt = event::read()?;
+
+        // If the active module has a popup open, route ALL events directly to
+        // the module — bypassing tab-switching shortcuts.
+        if let Some(i) = self.selected_tab.module_index()
+            && self.modules[i].is_popup_open()
+        {
+            self.modules[i].handle_event(&evt);
+            return Ok(());
+        }
+
         if let Event::Key(key) = evt
             && key.kind == KeyEventKind::Press
         {
             match key.code {
-                KeyCode::Char('l') | KeyCode::Right => self.next_tab(),
-                KeyCode::Char('h') | KeyCode::Left => self.previous_tab(),
+                KeyCode::Right => self.next_tab(),
+                KeyCode::Left => self.previous_tab(),
+                KeyCode::Up if self.log_visible => {
+                    self.log_scroll = self.log_scroll.saturating_add(1);
+                }
+                KeyCode::Down if self.log_visible => {
+                    self.log_scroll = self.log_scroll.saturating_sub(1);
+                }
+                KeyCode::Char('1') => self.selected_tab = SelectedTab::TabDashboard,
+                KeyCode::Char('2') => self.selected_tab = SelectedTab::TabBattery,
+                KeyCode::Char('3') => self.selected_tab = SelectedTab::TabThermal,
+                KeyCode::Char('4') => self.selected_tab = SelectedTab::TabRTC,
+                KeyCode::Char('5') => self.selected_tab = SelectedTab::TabSystem,
+                KeyCode::Char('l') => {
+                    self.log_visible = !self.log_visible;
+                    if self.log_visible {
+                        self.log_scroll = 0;
+                    }
+                }
                 KeyCode::Char('q') | KeyCode::Esc => self.quit(),
-
-                // Let the current tab handle event in this case
                 _ => self.handle_tab_event(&evt),
             }
         }
@@ -134,28 +211,24 @@ impl App {
     }
 
     fn handle_tab_event(&mut self, evt: &Event) {
-        self.modules
-            .get_mut(&self.selected_tab)
-            .expect("Tab must exist")
-            .handle_event(evt);
-    }
-
-    fn update_tabs(&mut self) {
-        for module in self.modules.values_mut() {
-            module.update();
+        if let Some(i) = self.selected_tab.module_index() {
+            self.modules[i].handle_event(evt);
         }
     }
 
     fn next_tab(&mut self) {
         self.selected_tab = self.selected_tab.next();
+        debug!(tab = %self.selected_tab, "switched to next tab");
     }
 
     fn previous_tab(&mut self) {
         self.selected_tab = self.selected_tab.previous();
+        debug!(tab = %self.selected_tab, "switched to previous tab");
     }
 
     fn quit(&mut self) {
-        self.state = AppState::Quitting;
+        info!("quit requested");
+        self.run_state = RunState::Quitting;
     }
 
     fn render_tabs(&self, area: Rect, buf: &mut Buffer) {
@@ -170,29 +243,62 @@ impl App {
             .render(area, buf);
     }
 
-    fn render_selected_tab(&self, area: Rect, buf: &mut Buffer) {
-        let module = self.modules.get(&self.selected_tab).expect("Tab must exist");
-        let block = self.selected_tab.block().title(module.title());
-        let inner = block.inner(area);
+    fn render_selected_tab(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+        if self.selected_tab == SelectedTab::TabDashboard {
+            self.render_dashboard(state, area, buf);
+            return;
+        }
 
+        if let Some(i) = self.selected_tab.module_index() {
+            let module = &self.modules[i];
+            let block = self
+                .selected_tab
+                .block()
+                .title(Line::from(module.title()).bold().centered());
+            let inner = block.inner(area);
+            block.render(area, buf);
+            module.render(state, inner, buf);
+        }
+    }
+
+    fn render_dashboard(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+        let block = SelectedTab::TabDashboard
+            .block()
+            .title(Line::from("System Overview").bold().centered());
+        let inner = block.inner(area);
         block.render(area, buf);
-        module.render(inner, buf);
+
+        let [row0, row1] = Layout::vertical([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(inner);
+        let [card00, card01] = Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(row0);
+        let [card10, card11] = Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(row1);
+
+        self.modules[0].render_card(state, card00, buf); // Battery
+        self.modules[1].render_card(state, card01, buf); // Thermal
+        self.modules[2].render_card(state, card10, buf); // RTC
+        self.modules[3].render_card(state, card11, buf); // System
     }
 }
 
 impl Widget for &App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
-        let vertical = Layout::vertical([Length(1), Min(0), Length(1)]);
-        let [header_area, inner_area, footer_area] = vertical.areas(area);
+
+        let state = self.shared_state.read().expect("state RwLock poisoned");
+
+        let log_height = if self.log_visible { LOG_PANEL_HEIGHT } else { 0 };
+        let vertical = Layout::vertical([Length(1), Min(0), Length(log_height), Length(1)]);
+        let [header_area, inner_area, log_area, footer_area] = vertical.areas(area);
 
         let horizontal = Layout::horizontal([Min(0), Length(20)]);
         let [tabs_area, title_area] = horizontal.areas(header_area);
 
         render_title(title_area, buf);
         self.render_tabs(tabs_area, buf);
-        self.render_selected_tab(inner_area, buf);
-        render_footer(footer_area, buf);
+        self.render_selected_tab(&state, inner_area, buf);
+        if self.log_visible {
+            self.render_log_panel(log_area, buf);
+        }
+        self.render_footer(footer_area, buf);
     }
 }
 
@@ -202,7 +308,107 @@ impl Drop for App {
     }
 }
 
+// ── Log panel ─────────────────────────────────────────────────────────────────
+
+/// Height of the log panel in terminal rows (includes the border).
+const LOG_PANEL_HEIGHT: u16 = 8;
+
+fn level_color(level: Level) -> Color {
+    match level {
+        Level::ERROR => tailwind::RED.c400,
+        Level::WARN => tailwind::AMBER.c400,
+        Level::INFO => tailwind::GREEN.c400,
+        Level::DEBUG => tailwind::SKY.c400,
+        Level::TRACE => tailwind::SLATE.c500,
+    }
+}
+
+impl App {
+    fn render_log_panel(&self, area: Rect, buf: &mut Buffer) {
+        let entries = self.log_buffer.entries();
+        let visible_rows = area.height.saturating_sub(2) as usize;
+
+        let max_scroll = entries.len().saturating_sub(visible_rows);
+        let scroll = self.log_scroll.min(max_scroll);
+        let skip = max_scroll.saturating_sub(scroll);
+        let lines: Vec<Line<'_>> = entries[skip..]
+            .iter()
+            .take(visible_rows)
+            .map(|entry| {
+                Line::from(vec![
+                    Span::styled(entry.timestamp.clone(), Style::default().fg(tailwind::SLATE.c500)),
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("[{:<5}]", entry.level),
+                        Style::default().fg(level_color(entry.level)),
+                    ),
+                    Span::raw(format!(" {}: {}", entry.target, entry.message)),
+                ])
+            })
+            .collect();
+
+        let scroll_label = if scroll > 0 {
+            format!(" Logs [↑{scroll}] ")
+        } else {
+            " Logs ".to_owned()
+        };
+
+        Paragraph::new(lines)
+            .block(
+                Block::bordered()
+                    .title(Line::from(scroll_label).bold())
+                    .title(
+                        Line::from(Span::styled(
+                            " RUST_LOG=<level> ",
+                            Style::default().fg(tailwind::SLATE.c600),
+                        ))
+                        .right_aligned(),
+                    )
+                    .border_style(Style::default().fg(tailwind::SLATE.c700)),
+            )
+            .render(area, buf);
+    }
+
+    fn render_footer(&self, area: Rect, buf: &mut Buffer) {
+        let key = Style::default()
+            .fg(tailwind::SLATE.c100)
+            .bg(tailwind::SLATE.c700)
+            .bold();
+        let desc = Style::default().fg(tailwind::SLATE.c500);
+        let log_hint = if self.log_visible { " hide logs" } else { " show logs" };
+        let mut spans = vec![
+            Span::styled(" ◄ ► ", key),
+            Span::styled(" switch tab  ", desc),
+            Span::styled(" 1-5 ", key),
+            Span::styled(" jump to tab  ", desc),
+            Span::styled(" l ", key),
+            Span::styled(log_hint, desc),
+        ];
+        if self.log_visible {
+            spans.extend([Span::styled("  ↑ ↓ ", key), Span::styled(" scroll logs  ", desc)]);
+        }
+        let show_set = matches!(self.selected_tab, SelectedTab::TabBattery | SelectedTab::TabThermal);
+        if show_set {
+            spans.extend([Span::styled("  s ", key), Span::styled(" set value  ", desc)]);
+        }
+        spans.extend([Span::styled("  q ", key), Span::styled(" quit", desc)]);
+        Line::from(spans).centered().render(area, buf);
+    }
+}
+
 impl SelectedTab {
+    /// Returns the index into `App::modules` for this tab, or `None` for
+    /// Dashboard which renders all module cards inline.
+    fn module_index(self) -> Option<usize> {
+        match self {
+            Self::TabDashboard => None,
+            Self::TabBattery => Some(0),
+            Self::TabThermal => Some(1),
+            Self::TabRTC => Some(2),
+            Self::TabSystem => Some(3),
+        }
+    }
+
     /// Get the previous tab, if there is no previous tab return the current tab.
     fn previous(self) -> Self {
         let current_index: usize = self as usize;
@@ -219,13 +425,12 @@ impl SelectedTab {
 }
 
 fn render_title(area: Rect, buf: &mut Buffer) {
-    "ODP EC Demo App".bold().render(area, buf);
-}
-
-fn render_footer(area: Rect, buf: &mut Buffer) {
-    Line::raw("◄ ► to change tab | Press q to quit")
-        .centered()
-        .render(area, buf);
+    Line::from(Span::styled(
+        "ODP EC Monitor",
+        Style::default().fg(tailwind::SLATE.c400).bold(),
+    ))
+    .right_aligned()
+    .render(area, buf);
 }
 
 impl SelectedTab {
@@ -240,17 +445,17 @@ impl SelectedTab {
     /// A block surrounding the tab's content
     fn block(self) -> Block<'static> {
         Block::bordered()
-            .border_set(symbols::border::PROPORTIONAL_TALL)
             .padding(Padding::uniform(1))
-            .border_style(self.palette().c700)
+            .border_style(self.palette().c500)
     }
 
     const fn palette(self) -> tailwind::Palette {
         match self {
-            Self::TabBattery => tailwind::BLUE,
-            Self::TabThermal => tailwind::EMERALD,
-            Self::TabRTC => tailwind::INDIGO,
-            Self::TabUCSI => tailwind::RED,
+            Self::TabDashboard => tailwind::SLATE,
+            Self::TabBattery => tailwind::SKY,
+            Self::TabThermal => tailwind::ORANGE,
+            Self::TabRTC => tailwind::VIOLET,
+            Self::TabSystem => tailwind::EMERALD,
         }
     }
 }

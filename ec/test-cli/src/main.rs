@@ -29,6 +29,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         #[cfg(target_os = "windows")]
-        SourceKind::Acpi => dispatch(ec_test_lib::acpi::Acpi::new(cli.fan_instance), cli.command),
+        SourceKind::Local => dispatch(ec_test_lib::acpi::Acpi::new(cli.fan_instance), cli.command),
     }
 }
