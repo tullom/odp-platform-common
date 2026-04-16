@@ -133,8 +133,8 @@ async fn main() -> color_eyre::Result<()> {
 }
 
 /// Update periods — hardcoded, not user-configurable.
-const BATTERY_PERIOD: Duration = Duration::from_secs(30);
-const THERMAL_PERIOD: Duration = Duration::from_secs(5);
+const BATTERY_PERIOD: Duration = Duration::from_secs(1);
+const THERMAL_PERIOD: Duration = Duration::from_secs(1);
 const RTC_PERIOD: Duration = Duration::from_secs(1);
 const SYSTEM_PERIOD: Duration = Duration::from_millis(500);
 

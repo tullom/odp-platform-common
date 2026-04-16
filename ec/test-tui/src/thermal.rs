@@ -195,7 +195,7 @@ impl Thermal {
         self.render_fan(state, fan_area, buf);
 
         if self.popup_open {
-            common::render_input_popup(area, buf, " Set Fan RPM Limit ", self.popup_input.value());
+            common::render_input_popup(area, buf, " Set Fan RPM ", self.popup_input.value());
         }
     }
 
@@ -250,7 +250,7 @@ impl Thermal {
         let fan_color = fan_zone_color(th.fan.rpm, &th.fan.state_levels);
         Line::from(vec![
             Span::styled(
-                format!("Fan   {:.0} RPM", th.fan.rpm),
+                format!("Fan   {:.1} RPM", th.fan.rpm),
                 Style::default().fg(LABEL_COLOR).bold(),
             ),
             Span::raw("  "),
@@ -287,7 +287,7 @@ impl Thermal {
             common::metric_row(
                 "Fan   ",
                 format!(
-                    "On:{:.0} Ramp:{:.0} Max:{:.0} RPM",
+                    "On:{:.0}\u{00b0} Ramp:{:.0}\u{00b0} Max:{:.0}\u{00b0}",
                     th.fan.state_levels.on, th.fan.state_levels.ramping, th.fan.state_levels.max
                 ),
                 tailwind::SLATE.c500,
