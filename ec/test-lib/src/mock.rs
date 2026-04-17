@@ -1,4 +1,4 @@
-use crate::{BatterySource, ErrorType, RtcSource, ThermalSource, Threshold, common};
+use crate::{BatterySource, ErrorType, RtcSource, ThermalSource, Threshold};
 use battery_service_messages::{
     BatteryState, BatterySwapCapability, BatteryTechnology, BixFixedStrings, BstReturn, PowerUnit,
 };
@@ -40,52 +40,126 @@ impl crate::Error for Error {
 }
 
 static SET_RPM: AtomicI64 = AtomicI64::new(-1);
-static SAMPLE: OnceLock<Mutex<(i64, i64)>> = OnceLock::new();
-static CURRENT_TEMP_DK: AtomicI64 = AtomicI64::new(2732);
+static CURRENT_TEMP_C: OnceLock<Mutex<f64>> = OnceLock::new();
+static TEMP_STATE: OnceLock<Mutex<TempState>> = OnceLock::new();
 static FAN_STATE: OnceLock<Mutex<FanState>> = OnceLock::new();
 
-/// Tracks a smooth RPM ramp between two values over a given duration.
-struct FanState {
-    current_rpm: f64,
-    target_rpm: f64,
-    ramp_start_rpm: f64,
-    ramp_start: Instant,
-    ramp_secs: f64,
+// ── Ramp helper (shared by fan and temperature) ─────────────────────────────
+
+/// Tracks a smooth linear ramp between two values over a given duration.
+struct Ramp {
+    current: f64,
+    target: f64,
+    start_value: f64,
+    start_time: Instant,
+    duration_secs: f64,
 }
 
-impl FanState {
-    fn new() -> Self {
+impl Ramp {
+    fn new(initial: f64) -> Self {
         Self {
-            current_rpm: 0.0,
-            target_rpm: 0.0,
-            ramp_start_rpm: 0.0,
-            ramp_start: Instant::now(),
-            ramp_secs: 0.0,
+            current: initial,
+            target: initial,
+            start_value: initial,
+            start_time: Instant::now(),
+            duration_secs: 0.0,
         }
     }
 
     /// Begin ramping toward `target` over `duration` seconds.
     /// No-op if the target hasn't changed.
     fn set_target(&mut self, target: f64, duration: f64) {
-        if (self.target_rpm - target).abs() > f64::EPSILON {
-            self.ramp_start_rpm = self.current_rpm;
-            self.target_rpm = target;
-            self.ramp_start = Instant::now();
-            self.ramp_secs = duration;
+        if (self.target - target).abs() > f64::EPSILON {
+            self.start_value = self.current;
+            self.target = target;
+            self.start_time = Instant::now();
+            self.duration_secs = duration;
         }
     }
 
-    /// Return the current RPM, linearly interpolated along the active ramp.
-    fn rpm(&mut self) -> f64 {
-        if self.ramp_secs <= 0.0 {
-            self.current_rpm = self.target_rpm;
+    /// Return the current value, linearly interpolated along the active ramp.
+    fn value(&mut self) -> f64 {
+        if self.duration_secs <= 0.0 {
+            self.current = self.target;
         } else {
-            let t = (self.ramp_start.elapsed().as_secs_f64() / self.ramp_secs).clamp(0.0, 1.0);
-            self.current_rpm = self.ramp_start_rpm + (self.target_rpm - self.ramp_start_rpm) * t;
+            let t = (self.start_time.elapsed().as_secs_f64() / self.duration_secs).clamp(0.0, 1.0);
+            self.current = self.start_value + (self.target - self.start_value) * t;
         }
-        self.current_rpm
+        self.current
+    }
+
+    /// True when the ramp has reached its target.
+    fn settled(&self) -> bool {
+        self.duration_secs <= 0.0 || self.start_time.elapsed().as_secs_f64() >= self.duration_secs
     }
 }
+
+// ── Temperature model ────────────────────────────────────────────────────────
+
+/// Simple xorshift64 PRNG — no external crate needed.
+fn xorshift64(state: &mut u64) -> u64 {
+    let mut s = *state;
+    s ^= s << 13;
+    s ^= s >> 7;
+    s ^= s << 17;
+    *state = s;
+    s
+}
+
+/// Random load events that drive temperature spikes and cooldowns.
+struct TempState {
+    ramp: Ramp,
+    rng: u64,
+    idle_temp: f64,
+}
+
+/// Ambient / idle temperature (°C).
+const IDLE_TEMP: f64 = 25.0;
+/// Duration of every temperature ramp (seconds).
+const TEMP_RAMP_SECS: f64 = 5.0;
+
+impl TempState {
+    fn new() -> Self {
+        // Seed from Instant for some entropy.
+        let seed = Instant::now().elapsed().as_nanos() as u64 | 1;
+        Self {
+            ramp: Ramp::new(IDLE_TEMP),
+            rng: seed,
+            idle_temp: IDLE_TEMP,
+        }
+    }
+
+    /// Called each poll cycle.  When the current ramp has settled, randomly
+    /// decide whether the system stays idle or gets a load spike.
+    fn poll(&mut self) -> f64 {
+        if self.ramp.settled() {
+            let r = xorshift64(&mut self.rng);
+            // 40% chance of a new load event, 60% chance of cooling back down.
+            let load_event = (r % 100) < 40;
+
+            if load_event {
+                // Pick a random peak temperature between the thresholds.
+                let kind = r % 10;
+                let target = match kind {
+                    0..=3 => 30.0 + (r % 800) as f64 / 100.0, // light load: 30–38 °C
+                    4..=6 => 40.0 + (r % 400) as f64 / 100.0, // medium load: 40–44 °C
+                    7..=8 => 44.0 + (r % 600) as f64 / 100.0, // heavy load: 44–50 °C
+                    _ => 50.0 + (r % 300) as f64 / 100.0,     // critical: 50–53 °C
+                };
+                self.ramp.set_target(target, TEMP_RAMP_SECS);
+            } else {
+                // Cool back toward idle with slight jitter.
+                let jitter = (r % 400) as f64 / 100.0; // 0–4 °C
+                self.ramp.set_target(self.idle_temp + jitter, TEMP_RAMP_SECS);
+            }
+        }
+        self.ramp.value()
+    }
+}
+
+// ── Fan model (rewritten to use Ramp) ────────────────────────────────────────
+
+type FanState = Ramp;
 
 #[derive(Default, Copy, Clone)]
 pub struct Mock {
@@ -104,15 +178,12 @@ impl ErrorType for Mock {
 
 impl ThermalSource for Mock {
     fn get_temperature(&self) -> Result<f64, Self::Error> {
-        let mut sample = SAMPLE.get_or_init(|| Mutex::new((2732, 1))).lock().unwrap();
+        let mut state = TEMP_STATE.get_or_init(|| Mutex::new(TempState::new())).lock().unwrap();
+        let temp_c = state.poll();
 
-        sample.0 += 10 * sample.1;
-        if sample.0 >= 3232 || sample.0 <= 2732 {
-            sample.1 *= -1;
-        }
-
-        CURRENT_TEMP_DK.store(sample.0, Ordering::Relaxed);
-        Ok(common::dk_to_c(sample.0 as u32))
+        // Publish for get_rpm() to read.
+        *CURRENT_TEMP_C.get_or_init(|| Mutex::new(IDLE_TEMP)).lock().unwrap() = temp_c;
+        Ok(temp_c)
     }
 
     fn get_rpm(&self) -> Result<f64, Self::Error> {
@@ -122,23 +193,23 @@ impl ThermalSource for Mock {
             return Ok(set_rpm as f64);
         }
 
-        let temp_c = common::dk_to_c(CURRENT_TEMP_DK.load(Ordering::Relaxed) as u32);
+        let temp_c = *CURRENT_TEMP_C.get_or_init(|| Mutex::new(IDLE_TEMP)).lock().unwrap();
         let max_rpm = self.get_max_rpm()?;
 
         // Target RPM and ramp duration based on temperature thresholds.
         let (target, ramp_secs) = if temp_c >= 44.0 {
-            (max_rpm, 3.5)
+            (max_rpm, 5.0)
         } else if temp_c >= 40.0 {
-            (3500.0, 4.0)
+            (3500.0, 5.0)
         } else if temp_c >= 28.0 {
             (1500.0, 2.0)
         } else {
             (0.0, 2.0)
         };
 
-        let mut fan = FAN_STATE.get_or_init(|| Mutex::new(FanState::new())).lock().unwrap();
+        let mut fan = FAN_STATE.get_or_init(|| Mutex::new(Ramp::new(0.0))).lock().unwrap();
         fan.set_target(target, ramp_secs);
-        Ok(fan.rpm())
+        Ok(fan.value())
     }
 
     fn get_min_rpm(&self) -> Result<f64, Self::Error> {
