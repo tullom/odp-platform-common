@@ -146,27 +146,40 @@ fn run_with_source<S>(
 where
     S: ec_test_lib::Source + Send + Sync + 'static,
 {
-    let shared_state = Arc::new(RwLock::new(state::AppState::default()));
+    let battery_state = Arc::new(RwLock::new(state::BatteryState::default()));
+    let thermal_state = Arc::new(RwLock::new(state::ThermalState::default()));
+    let rtc_state = Arc::new(RwLock::new(state::RtcState::default()));
+    let system_state = Arc::new(RwLock::new(state::SystemState::default()));
+
     let (battery_tx, battery_rx) = std::sync::mpsc::channel::<state::BatteryCommand>();
     let (thermal_tx, thermal_rx) = std::sync::mpsc::channel::<state::ThermalCommand>();
     let source = Arc::new(source);
 
     tokio::task::spawn({
-        let upd = updater::BatteryUpdater::new(Arc::clone(&source), Arc::clone(&shared_state), battery_rx);
+        let upd = updater::BatteryUpdater::new(Arc::clone(&source), Arc::clone(&battery_state), battery_rx);
         async move { upd.run(BATTERY_PERIOD).await }
     });
     tokio::task::spawn({
-        let upd = updater::ThermalUpdater::new(Arc::clone(&source), Arc::clone(&shared_state), thermal_rx);
+        let upd = updater::ThermalUpdater::new(Arc::clone(&source), Arc::clone(&thermal_state), thermal_rx);
         async move { upd.run(THERMAL_PERIOD).await }
     });
     tokio::task::spawn({
-        let upd = updater::RtcUpdater::new(Arc::clone(&source), Arc::clone(&shared_state));
+        let upd = updater::RtcUpdater::new(Arc::clone(&source), Arc::clone(&rtc_state));
         async move { upd.run(RTC_PERIOD).await }
     });
     tokio::task::spawn({
-        let upd = updater::SystemUpdater::new(Arc::clone(&shared_state));
+        let upd = updater::SystemUpdater::new(Arc::clone(&system_state));
         async move { upd.run(SYSTEM_PERIOD).await }
     });
 
-    app::App::new(shared_state, battery_tx, thermal_tx, log_buffer).run(terminal)
+    app::App::new(
+        battery_state,
+        thermal_state,
+        rtc_state,
+        system_state,
+        battery_tx,
+        thermal_tx,
+        log_buffer,
+    )
+    .run(terminal)
 }

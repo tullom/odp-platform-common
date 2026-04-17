@@ -8,7 +8,7 @@ use ratatui::{
 };
 
 use crate::common::{self, CHART_MARKER, Graph, SYMBOLS};
-use crate::state::{AppState, SYSTEM_MAX_SAMPLES};
+use crate::state::{SYSTEM_MAX_SAMPLES, SystemState};
 
 const LABEL_COLOR: Color = tailwind::SLATE.c400;
 const CPU_COLOR: Color = tailwind::EMERALD.c400;
@@ -28,7 +28,7 @@ impl System {
 
     pub fn handle_event(&mut self, _evt: &Event) {}
 
-    pub fn render(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    pub fn render(&self, state: &SystemState, area: Rect, buf: &mut Buffer) {
         let [top_area, bottom_area] =
             Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(area);
         let [cpu_area, mem_area] = common::area_split(top_area, Direction::Horizontal, 50, 50);
@@ -38,9 +38,9 @@ impl System {
         self.render_network(state, bottom_area, buf);
     }
 
-    pub fn render_card(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    pub fn render_card(&self, state: &SystemState, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
-        let s = &state.system;
+        let s = state;
 
         let block = Block::bordered()
             .title(common::status_title(
@@ -113,9 +113,9 @@ impl Default for System {
 // ── Private render helpers ────────────────────────────────────────────────────
 
 impl System {
-    fn render_cpu(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    fn render_cpu(&self, state: &SystemState, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
-        let cpu = &state.system.cpu;
+        let cpu = &state.cpu;
 
         let block = Block::bordered()
             .title(common::status_title("CPU", cpu.success))
@@ -198,9 +198,9 @@ impl System {
         }
     }
 
-    fn render_memory(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    fn render_memory(&self, state: &SystemState, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
-        let mem = &state.system.memory;
+        let mem = &state.memory;
 
         let block = Block::bordered()
             .title(common::status_title("Memory", mem.success))
@@ -294,9 +294,9 @@ impl System {
         }
     }
 
-    fn render_network(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    fn render_network(&self, state: &SystemState, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
-        let net = &state.system.network;
+        let net = &state.network;
 
         let block = Block::bordered()
             .title(common::status_title("Network", net.success))

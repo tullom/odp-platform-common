@@ -174,14 +174,3 @@ pub struct RtcState {
     /// `[0]` = AC Power timer, `[1]` = DC Power timer.
     pub timers: [TimerData; 2],
 }
-
-// ── AppState ─────────────────────────────────────────────────────────────────
-
-/// All shared data state.  Written by the background updater; read by the UI.
-#[derive(Default)]
-pub struct AppState {
-    pub battery: BatteryState,
-    pub thermal: ThermalState,
-    pub rtc: RtcState,
-    pub system: SystemState,
-}

@@ -1,5 +1,5 @@
 use crate::common::{self, SYMBOLS, unicode_enabled};
-use crate::state::{AppState, BatteryCommand, BatteryState};
+use crate::state::{BatteryCommand, BatteryState};
 use crate::widgets::battery;
 use battery_service_messages::{BatteryState as BatteryStateFlag, BatterySwapCapability, BatteryTechnology, PowerUnit};
 use core::ffi::CStr;
@@ -166,7 +166,7 @@ impl Battery {
         }
     }
 
-    pub(crate) fn render(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    pub(crate) fn render(&self, state: &BatteryState, area: Rect, buf: &mut Buffer) {
         use Constraint::{Min, Percentage};
         let [strip_area, bottom_area] = Layout::vertical([Percentage(22), Min(0)]).areas(area);
         let [bix_area, chart_area] = Layout::horizontal([Percentage(50), Percentage(50)]).areas(bottom_area);
@@ -176,14 +176,14 @@ impl Battery {
         self.render_bst_chart(state, chart_area, buf);
 
         if self.popup_open {
-            let cap_unit = power_unit_as_capacity_str(state.battery.bix.power_unit);
+            let cap_unit = power_unit_as_capacity_str(state.bix.power_unit);
             let title = format!(" Set Battery Trippoint ({cap_unit}) ");
             common::render_input_popup(area, buf, &title, self.popup_input.value());
         }
     }
 
-    pub(crate) fn render_card(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        let bat = &state.battery;
+    pub(crate) fn render_card(&self, state: &BatteryState, area: Rect, buf: &mut Buffer) {
+        let bat = state;
         let is_charging = bat.bst.battery_state.contains(BatteryStateFlag::CHARGING);
         let state_str = if is_charging {
             format!("{} Charging", SYMBOLS.charging)
@@ -315,9 +315,9 @@ fn estimate_time(remaining: u32, design: u32, last_full: u32, rate: u32, is_char
 // ── Render helpers (private, methods on Battery) ──────────────────────────────
 
 impl Battery {
-    fn render_status_strip(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    fn render_status_strip(&self, state: &BatteryState, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
-        let bat = &state.battery;
+        let bat = state;
         let is_charging = bat.bst.battery_state.contains(BatteryStateFlag::CHARGING);
         let state_str = if is_charging {
             format!("{} Charging", SYMBOLS.charging)
@@ -389,8 +389,8 @@ impl Battery {
             .render(bat_area, buf, &mut bat_widget_state);
     }
 
-    fn render_bst_chart(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        let bat = &state.battery;
+    fn render_bst_chart(&self, state: &BatteryState, area: Rect, buf: &mut Buffer) {
+        let bat = state;
         let y_labels = [
             "0".bold(),
             Span::styled(format!("{}", bat.bix.design_capacity / 2), Style::default().bold()),
@@ -516,8 +516,8 @@ impl Battery {
         ]
     }
 
-    fn render_bix(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        let bat = &state.battery;
+    fn render_bix(&self, state: &BatteryState, area: Rect, buf: &mut Buffer) {
+        let bat = state;
         let table = Table::new(self.bix_rows(bat), [Constraint::Min(22), Constraint::Fill(1)])
             .block(
                 Block::bordered()

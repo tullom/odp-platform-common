@@ -1,6 +1,6 @@
 use crate::common;
 use crate::common::SYMBOLS;
-use crate::state::{AppState, FanStateLevels, SensorThresholds, ThermalCommand};
+use crate::state::{FanStateLevels, SensorThresholds, ThermalCommand, ThermalState};
 use tracing::{debug, warn};
 
 #[cfg(test)]
@@ -190,7 +190,7 @@ impl Thermal {
         }
     }
 
-    pub(crate) fn render(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    pub(crate) fn render(&self, state: &ThermalState, area: Rect, buf: &mut Buffer) {
         let [sensor_area, fan_area] = common::area_split(area, Direction::Horizontal, 50, 50);
         self.render_sensor(state, sensor_area, buf);
         self.render_fan(state, fan_area, buf);
@@ -200,10 +200,10 @@ impl Thermal {
         }
     }
 
-    pub(crate) fn render_card(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    pub(crate) fn render_card(&self, state: &ThermalState, area: Rect, buf: &mut Buffer) {
         use ratatui::layout::Constraint::{Length, Min};
 
-        let th = &state.thermal;
+        let th = state;
         let block = Block::bordered()
             .title(common::status_title(
                 "Thermal",
@@ -307,14 +307,14 @@ impl Thermal {
 // ── Render helpers ────────────────────────────────────────────────────────────
 
 impl Thermal {
-    fn render_sensor(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    fn render_sensor(&self, state: &ThermalState, area: Rect, buf: &mut Buffer) {
         let [chart_area, stats_area] = common::area_split(area, Direction::Vertical, 65, 35);
         self.render_sensor_chart(state, chart_area, buf);
         self.render_sensor_stats(state, stats_area, buf);
     }
 
-    fn render_sensor_chart(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        let s = &state.thermal.sensor;
+    fn render_sensor_chart(&self, state: &ThermalState, area: Rect, buf: &mut Buffer) {
+        let s = &state.sensor;
         let y_labels = [
             "0.0".bold(),
             Span::styled(
@@ -337,8 +337,8 @@ impl Thermal {
         common::render_chart(area, buf, graph);
     }
 
-    fn render_sensor_stats(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        let s = &state.thermal.sensor;
+    fn render_sensor_stats(&self, state: &ThermalState, area: Rect, buf: &mut Buffer) {
+        let s = &state.sensor;
         let block = common::title_block(common::status_title("Live Temperature", s.temp_success), 0, LABEL_COLOR);
         let inner = block.inner(area);
         block.render(area, buf);
@@ -390,7 +390,7 @@ impl Thermal {
         .render(thresholds_area, buf);
     }
 
-    fn render_fan(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    fn render_fan(&self, state: &ThermalState, area: Rect, buf: &mut Buffer) {
         let [chart_area, widget_area] = common::area_split(area, Direction::Vertical, 65, 35);
         let [stats_area, levels_area] = common::area_split(widget_area, Direction::Horizontal, 50, 50);
         self.render_fan_chart(state, chart_area, buf);
@@ -398,8 +398,8 @@ impl Thermal {
         self.render_fan_levels(state, levels_area, buf);
     }
 
-    fn render_fan_chart(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        let f = &state.thermal.fan;
+    fn render_fan_chart(&self, state: &ThermalState, area: Rect, buf: &mut Buffer) {
+        let f = &state.fan;
         let y_labels = [
             "0.0".bold(),
             Span::styled((f.rpm_bounds.max / 2.0).to_string(), Style::default().bold()),
@@ -419,8 +419,8 @@ impl Thermal {
         common::render_chart(area, buf, graph);
     }
 
-    fn render_fan_stats(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        let f = &state.thermal.fan;
+    fn render_fan_stats(&self, state: &ThermalState, area: Rect, buf: &mut Buffer) {
+        let f = &state.fan;
         let block = common::title_block(
             common::status_title("Live Fan RPM", f.rpm_success && f.bounds_success),
             0,
@@ -459,21 +459,21 @@ impl Thermal {
         }
         .render(gauge_area, buf);
 
-        let (limit_str, limit_color) = if state.thermal.rpm_limit > 0.0 {
-            let color = if state.thermal.rpm_set_success {
+        let (limit_str, limit_color) = if state.rpm_limit > 0.0 {
+            let color = if state.rpm_set_success {
                 tailwind::GREEN.c400
             } else {
                 tailwind::RED.c500
             };
-            (format!("{:.0} RPM", state.thermal.rpm_limit), color)
+            (format!("{:.0} RPM", state.rpm_limit), color)
         } else {
             ("—  (press s to set)".to_string(), tailwind::SLATE.c500)
         };
         common::metric_row("Limit", limit_str, limit_color).render(limit_line, buf);
     }
 
-    fn render_fan_levels(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        let f = &state.thermal.fan;
+    fn render_fan_levels(&self, state: &ThermalState, area: Rect, buf: &mut Buffer) {
+        let f = &state.fan;
         let block = common::title_block(
             common::status_title("Fan State Levels", f.levels_success),
             1,

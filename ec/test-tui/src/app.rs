@@ -1,7 +1,7 @@
 use crate::battery::Battery;
 use crate::logging::LogBuffer;
 use crate::rtc::Rtc;
-use crate::state::{AppState, BatteryCommand, ThermalCommand};
+use crate::state::{BatteryCommand, BatteryState, RtcState, SystemState, ThermalCommand, ThermalState};
 use crate::system::System;
 use crate::thermal::Thermal;
 
@@ -55,21 +55,51 @@ impl TabModule {
         }
     }
 
-    pub(crate) fn render(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        match self {
-            Self::Battery(m) => m.render(state, area, buf),
-            Self::Thermal(m) => m.render(state, area, buf),
-            Self::Rtc(m) => m.render(state, area, buf),
-            Self::System(m) => m.render(state, area, buf),
+    pub(crate) fn render_battery(&self, state: &BatteryState, area: Rect, buf: &mut Buffer) {
+        if let Self::Battery(m) = self {
+            m.render(state, area, buf);
         }
     }
 
-    pub(crate) fn render_card(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        match self {
-            Self::Battery(m) => m.render_card(state, area, buf),
-            Self::Thermal(m) => m.render_card(state, area, buf),
-            Self::Rtc(m) => m.render_card(state, area, buf),
-            Self::System(m) => m.render_card(state, area, buf),
+    pub(crate) fn render_thermal(&self, state: &ThermalState, area: Rect, buf: &mut Buffer) {
+        if let Self::Thermal(m) = self {
+            m.render(state, area, buf);
+        }
+    }
+
+    pub(crate) fn render_rtc(&self, state: &RtcState, area: Rect, buf: &mut Buffer) {
+        if let Self::Rtc(m) = self {
+            m.render(state, area, buf);
+        }
+    }
+
+    pub(crate) fn render_system(&self, state: &SystemState, area: Rect, buf: &mut Buffer) {
+        if let Self::System(m) = self {
+            m.render(state, area, buf);
+        }
+    }
+
+    pub(crate) fn render_card_battery(&self, state: &BatteryState, area: Rect, buf: &mut Buffer) {
+        if let Self::Battery(m) = self {
+            m.render_card(state, area, buf);
+        }
+    }
+
+    pub(crate) fn render_card_thermal(&self, state: &ThermalState, area: Rect, buf: &mut Buffer) {
+        if let Self::Thermal(m) = self {
+            m.render_card(state, area, buf);
+        }
+    }
+
+    pub(crate) fn render_card_rtc(&self, state: &RtcState, area: Rect, buf: &mut Buffer) {
+        if let Self::Rtc(m) = self {
+            m.render_card(state, area, buf);
+        }
+    }
+
+    pub(crate) fn render_card_system(&self, state: &SystemState, area: Rect, buf: &mut Buffer) {
+        if let Self::System(m) = self {
+            m.render_card(state, area, buf);
         }
     }
 
@@ -109,7 +139,10 @@ pub struct App {
     run_state: RunState,
     selected_tab: SelectedTab,
     modules: [TabModule; 4],
-    shared_state: Arc<RwLock<AppState>>,
+    battery_state: Arc<RwLock<BatteryState>>,
+    thermal_state: Arc<RwLock<ThermalState>>,
+    rtc_state: Arc<RwLock<RtcState>>,
+    system_state: Arc<RwLock<SystemState>>,
     log_buffer: LogBuffer,
     log_visible: bool,
     log_scroll: usize,
@@ -118,10 +151,14 @@ pub struct App {
 impl App {
     /// Construct the application.
     ///
-    /// * `shared_state` — populated by the background updater thread.
+    /// * `battery_state` / `thermal_state` / `rtc_state` / `system_state` —
+    ///   populated by the background updater threads.
     /// * `battery_tx` / `thermal_tx` — command channels for hardware write-backs.
     pub fn new(
-        shared_state: Arc<RwLock<AppState>>,
+        battery_state: Arc<RwLock<BatteryState>>,
+        thermal_state: Arc<RwLock<ThermalState>>,
+        rtc_state: Arc<RwLock<RtcState>>,
+        system_state: Arc<RwLock<SystemState>>,
         battery_tx: mpsc::Sender<BatteryCommand>,
         thermal_tx: mpsc::Sender<ThermalCommand>,
         log_buffer: LogBuffer,
@@ -137,7 +174,10 @@ impl App {
             run_state: Default::default(),
             selected_tab: Default::default(),
             modules,
-            shared_state,
+            battery_state,
+            thermal_state,
+            rtc_state,
+            system_state,
             log_buffer,
             log_visible: false,
             log_scroll: 0,
@@ -245,9 +285,9 @@ impl App {
             .render(area, buf);
     }
 
-    fn render_selected_tab(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    fn render_selected_tab(&self, area: Rect, buf: &mut Buffer) {
         if self.selected_tab == SelectedTab::TabDashboard {
-            self.render_dashboard(state, area, buf);
+            self.render_dashboard(area, buf);
             return;
         }
 
@@ -259,11 +299,17 @@ impl App {
                 .title(Line::from(module.title()).bold().centered());
             let inner = block.inner(area);
             block.render(area, buf);
-            module.render(state, inner, buf);
+            match i {
+                0 => module.render_battery(&self.battery_state.read().expect("battery RwLock poisoned"), inner, buf),
+                1 => module.render_thermal(&self.thermal_state.read().expect("thermal RwLock poisoned"), inner, buf),
+                2 => module.render_rtc(&self.rtc_state.read().expect("rtc RwLock poisoned"), inner, buf),
+                3 => module.render_system(&self.system_state.read().expect("system RwLock poisoned"), inner, buf),
+                _ => unreachable!(),
+            }
         }
     }
 
-    fn render_dashboard(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    fn render_dashboard(&self, area: Rect, buf: &mut Buffer) {
         let block = SelectedTab::TabDashboard
             .block()
             .title(Line::from("System Overview").bold().centered());
@@ -274,18 +320,21 @@ impl App {
         let [card00, card01] = Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(row0);
         let [card10, card11] = Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(row1);
 
-        self.modules[0].render_card(state, card00, buf); // Battery
-        self.modules[1].render_card(state, card01, buf); // Thermal
-        self.modules[2].render_card(state, card10, buf); // RTC
-        self.modules[3].render_card(state, card11, buf); // System
+        let bat = self.battery_state.read().expect("battery RwLock poisoned");
+        let thm = self.thermal_state.read().expect("thermal RwLock poisoned");
+        let rtc = self.rtc_state.read().expect("rtc RwLock poisoned");
+        let sys = self.system_state.read().expect("system RwLock poisoned");
+
+        self.modules[0].render_card_battery(&bat, card00, buf);
+        self.modules[1].render_card_thermal(&thm, card01, buf);
+        self.modules[2].render_card_rtc(&rtc, card10, buf);
+        self.modules[3].render_card_system(&sys, card11, buf);
     }
 }
 
 impl Widget for &App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
-
-        let state = self.shared_state.read().expect("state RwLock poisoned");
 
         let log_height = if self.log_visible { LOG_PANEL_HEIGHT } else { 0 };
         let vertical = Layout::vertical([Length(1), Min(0), Length(log_height), Length(1)]);
@@ -296,7 +345,7 @@ impl Widget for &App {
 
         render_title(title_area, buf);
         self.render_tabs(tabs_area, buf);
-        self.render_selected_tab(&state, inner_area, buf);
+        self.render_selected_tab(inner_area, buf);
         if self.log_visible {
             self.render_log_panel(log_area, buf);
         }
