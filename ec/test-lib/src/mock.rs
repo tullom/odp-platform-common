@@ -8,6 +8,7 @@ use std::sync::{
     atomic::Ordering,
     atomic::{AtomicI64, AtomicU32},
 };
+use std::time::Instant;
 use time_alarm_service_messages::{
     AcpiDaylightSavingsTimeStatus, AcpiTimeZone, AcpiTimeZoneOffset, AcpiTimerId, AcpiTimestamp,
     AlarmExpiredWakePolicy, AlarmTimerSeconds, TimeAlarmDeviceCapabilities, TimerStatus,
@@ -40,6 +41,51 @@ impl crate::Error for Error {
 
 static SET_RPM: AtomicI64 = AtomicI64::new(-1);
 static SAMPLE: OnceLock<Mutex<(i64, i64)>> = OnceLock::new();
+static CURRENT_TEMP_DK: AtomicI64 = AtomicI64::new(2732);
+static FAN_STATE: OnceLock<Mutex<FanState>> = OnceLock::new();
+
+/// Tracks a smooth RPM ramp between two values over a given duration.
+struct FanState {
+    current_rpm: f64,
+    target_rpm: f64,
+    ramp_start_rpm: f64,
+    ramp_start: Instant,
+    ramp_secs: f64,
+}
+
+impl FanState {
+    fn new() -> Self {
+        Self {
+            current_rpm: 0.0,
+            target_rpm: 0.0,
+            ramp_start_rpm: 0.0,
+            ramp_start: Instant::now(),
+            ramp_secs: 0.0,
+        }
+    }
+
+    /// Begin ramping toward `target` over `duration` seconds.
+    /// No-op if the target hasn't changed.
+    fn set_target(&mut self, target: f64, duration: f64) {
+        if (self.target_rpm - target).abs() > f64::EPSILON {
+            self.ramp_start_rpm = self.current_rpm;
+            self.target_rpm = target;
+            self.ramp_start = Instant::now();
+            self.ramp_secs = duration;
+        }
+    }
+
+    /// Return the current RPM, linearly interpolated along the active ramp.
+    fn rpm(&mut self) -> f64 {
+        if self.ramp_secs <= 0.0 {
+            self.current_rpm = self.target_rpm;
+        } else {
+            let t = (self.ramp_start.elapsed().as_secs_f64() / self.ramp_secs).clamp(0.0, 1.0);
+            self.current_rpm = self.ramp_start_rpm + (self.target_rpm - self.ramp_start_rpm) * t;
+        }
+        self.current_rpm
+    }
+}
 
 #[derive(Default, Copy, Clone)]
 pub struct Mock {
@@ -65,34 +111,34 @@ impl ThermalSource for Mock {
             sample.1 *= -1;
         }
 
+        CURRENT_TEMP_DK.store(sample.0, Ordering::Relaxed);
         Ok(common::dk_to_c(sample.0 as u32))
     }
 
     fn get_rpm(&self) -> Result<f64, Self::Error> {
-        use std::f64::consts::PI;
-        use std::sync::{Mutex, OnceLock};
-
-        // For mock, if user sets RPM, we just always return what was last set instead of sin wave
+        // If the user explicitly set an RPM, honour it.
         let set_rpm = SET_RPM.load(Ordering::Relaxed);
         if set_rpm >= 0 {
-            Ok(set_rpm as f64)
-        } else {
-            // Generate sin wave
-            static SAMPLE: OnceLock<Mutex<f64>> = OnceLock::new();
-            let mut sample = SAMPLE.get_or_init(|| Mutex::new(0.0)).lock().unwrap();
-
-            let freq = 0.1;
-            let amplitude = 3000.0;
-            let base = 3000.0;
-            let rpm = (sample.sin() * amplitude) + base;
-
-            *sample += freq;
-            if *sample > 2.0 * PI {
-                *sample -= 2.0 * PI;
-            }
-
-            Ok(rpm)
+            return Ok(set_rpm as f64);
         }
+
+        let temp_c = common::dk_to_c(CURRENT_TEMP_DK.load(Ordering::Relaxed) as u32);
+        let max_rpm = self.get_max_rpm()?;
+
+        // Target RPM and ramp duration based on temperature thresholds.
+        let (target, ramp_secs) = if temp_c >= 44.0 {
+            (max_rpm, 3.5)
+        } else if temp_c >= 40.0 {
+            (3500.0, 4.0)
+        } else if temp_c >= 28.0 {
+            (1500.0, 2.0)
+        } else {
+            (0.0, 2.0)
+        };
+
+        let mut fan = FAN_STATE.get_or_init(|| Mutex::new(FanState::new())).lock().unwrap();
+        fan.set_target(target, ramp_secs);
+        Ok(fan.rpm())
     }
 
     fn get_min_rpm(&self) -> Result<f64, Self::Error> {
