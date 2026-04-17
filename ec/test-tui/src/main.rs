@@ -3,6 +3,7 @@ mod battery;
 mod common;
 mod logging;
 mod rtc;
+mod source;
 mod state;
 mod system;
 mod thermal;
@@ -85,11 +86,13 @@ enum FlowControl {
     Hardware,
 }
 
-#[tokio::main]
-async fn main() -> color_eyre::Result<()> {
-    let cli = Cli::parse();
+/// Update periods — hardcoded, not user-configurable.
+const BATTERY_PERIOD: Duration = Duration::from_secs(1);
+const THERMAL_PERIOD: Duration = Duration::from_secs(1);
+const RTC_PERIOD: Duration = Duration::from_secs(1);
+const SYSTEM_PERIOD: Duration = Duration::from_millis(500);
 
-    // Build an optional file layer when --log-file is supplied.
+fn init_tracing(cli: &Cli) -> color_eyre::Result<logging::LogBuffer> {
     let file_layer: Option<_> = cli
         .log_file
         .as_ref()
@@ -100,8 +103,6 @@ async fn main() -> color_eyre::Result<()> {
         .transpose()?;
 
     let log_buffer = logging::LogBuffer::new();
-
-    // Default to WARN when RUST_LOG is not set so the panel isn't flooded.
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
 
     tracing_subscriber::registry()
@@ -110,42 +111,20 @@ async fn main() -> color_eyre::Result<()> {
         .with(file_layer)
         .init();
 
+    Ok(log_buffer)
+}
+
+#[tokio::main]
+async fn main() -> color_eyre::Result<()> {
+    let cli = Cli::parse();
+    let log_buffer = init_tracing(&cli)?;
     color_eyre::install()?;
 
     tracing::debug!("Starting EC test TUI with source: '{:?}'", cli.source);
 
+    let source = source::build(&cli)?;
     let terminal = ratatui::init();
 
-    match cli.source {
-        SourceKind::Mock => run_with_source(ec_test_lib::mock::Mock::default(), log_buffer, terminal),
-
-        SourceKind::Serial => {
-            let port = cli.port.expect("--port is required for --source serial");
-            let hw_flow = matches!(cli.flow_control, FlowControl::Hardware);
-            let source =
-                ec_test_lib::serial::Serial::new(&port, cli.baud, hw_flow, cli.sensor_instance, cli.fan_instance)?;
-            run_with_source(source, log_buffer, terminal)
-        }
-
-        #[cfg(target_os = "windows")]
-        SourceKind::Local => run_with_source(ec_test_lib::acpi::Acpi::new(cli.fan_instance), log_buffer, terminal),
-    }
-}
-
-/// Update periods — hardcoded, not user-configurable.
-const BATTERY_PERIOD: Duration = Duration::from_secs(1);
-const THERMAL_PERIOD: Duration = Duration::from_secs(1);
-const RTC_PERIOD: Duration = Duration::from_secs(1);
-const SYSTEM_PERIOD: Duration = Duration::from_millis(500);
-
-fn run_with_source<S>(
-    source: S,
-    log_buffer: logging::LogBuffer,
-    terminal: ratatui::DefaultTerminal,
-) -> color_eyre::Result<()>
-where
-    S: ec_test_lib::Source + Send + Sync + 'static,
-{
     let battery_state = Arc::new(RwLock::new(state::BatteryState::default()));
     let thermal_state = Arc::new(RwLock::new(state::ThermalState::default()));
     let rtc_state = Arc::new(RwLock::new(state::RtcState::default()));
@@ -153,7 +132,6 @@ where
 
     let (battery_tx, battery_rx) = std::sync::mpsc::channel::<state::BatteryCommand>();
     let (thermal_tx, thermal_rx) = std::sync::mpsc::channel::<state::ThermalCommand>();
-    let source = Arc::new(source);
 
     tokio::task::spawn({
         let upd = updater::BatteryUpdater::new(Arc::clone(&source), Arc::clone(&battery_state), battery_rx);

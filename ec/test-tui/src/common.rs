@@ -304,27 +304,3 @@ pub fn render_input_popup(area: Rect, buf: &mut Buffer, title: &str, value: &str
     block.render(popup, buf);
     Paragraph::new(format!("> {value}")).render(inner, buf);
 }
-
-/// Minimal test doubles shared across module test suites.
-#[cfg(test)]
-pub(crate) mod test_support {
-    use ec_test_lib::{Error as EcError, ErrorKind};
-
-    /// A zero-size error type that always maps to [`ErrorKind::Other`].
-    #[derive(Debug)]
-    pub(crate) struct TestError;
-
-    impl std::fmt::Display for TestError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "test error")
-        }
-    }
-
-    impl std::error::Error for TestError {}
-
-    impl EcError for TestError {
-        fn kind(&self) -> ErrorKind {
-            ErrorKind::Other
-        }
-    }
-}

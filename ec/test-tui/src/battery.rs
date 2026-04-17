@@ -1,9 +1,9 @@
 use crate::common::{self, SYMBOLS, unicode_enabled};
+use crate::source::DynSource;
 use crate::state::{BatteryCommand, BatteryState};
 use crate::widgets::battery;
 use battery_service_messages::{BatteryState as BatteryStateFlag, BatterySwapCapability, BatteryTechnology, PowerUnit};
 use core::ffi::CStr;
-use ec_test_lib::BatterySource;
 use std::sync::mpsc;
 use tracing::{debug, instrument, warn};
 
@@ -75,7 +75,7 @@ fn swap_cap_as_str(swap_cap: BatterySwapCapability) -> &'static str {
 
 /// Fetch the latest BST reading into `state`.
 #[instrument(skip_all)]
-pub(crate) fn poll_bst(state: &mut BatteryState, source: &impl BatterySource) {
+pub(crate) fn poll_bst(state: &mut BatteryState, source: &dyn DynSource) {
     match source.get_bst() {
         Ok(bst) => {
             debug!(
@@ -95,7 +95,7 @@ pub(crate) fn poll_bst(state: &mut BatteryState, source: &impl BatterySource) {
 
 /// Fetch static BIX info into `state` (call until `state.bix_success` is true).
 #[instrument(skip_all)]
-pub(crate) fn poll_bix(state: &mut BatteryState, source: &impl BatterySource) {
+pub(crate) fn poll_bix(state: &mut BatteryState, source: &dyn DynSource) {
     match source.get_bix() {
         Ok(bix) => {
             debug!("BIX read OK");
@@ -532,18 +532,15 @@ impl Battery {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::test_support::TestError;
+    use crate::source::DynSource;
     use battery_service_messages::{BatterySwapCapability, BatteryTechnology, BixFixedStrings, BstReturn, PowerUnit};
-    use ec_test_lib::{BatterySource, ErrorType};
+    use color_eyre::eyre::eyre;
 
     // ── test doubles ─────────────────────────────────────────────────────────
 
     struct OkSource;
-    impl ErrorType for OkSource {
-        type Error = TestError;
-    }
-    impl BatterySource for OkSource {
-        fn get_bst(&self) -> Result<BstReturn, Self::Error> {
+    impl DynSource for OkSource {
+        fn get_bst(&self) -> color_eyre::Result<BstReturn> {
             Ok(BstReturn {
                 battery_state: BatteryStateFlag::CHARGING,
                 battery_present_rate: 1000,
@@ -551,7 +548,7 @@ mod tests {
                 battery_present_voltage: 12000,
             })
         }
-        fn get_bix(&self) -> Result<BixFixedStrings, Self::Error> {
+        fn get_bix(&self) -> color_eyre::Result<BixFixedStrings> {
             Ok(BixFixedStrings {
                 design_capacity: 10000,
                 cycle_count: 42,
@@ -559,24 +556,105 @@ mod tests {
                 ..Default::default()
             })
         }
-        fn set_btp(&self, _: u32) -> Result<(), Self::Error> {
+        fn set_btp(&self, _: u32) -> color_eyre::Result<()> {
             Ok(())
+        }
+        fn get_temperature(&self) -> color_eyre::Result<f64> {
+            Err(eyre!("unused"))
+        }
+        fn get_rpm(&self) -> color_eyre::Result<f64> {
+            Err(eyre!("unused"))
+        }
+        fn get_min_rpm(&self) -> color_eyre::Result<f64> {
+            Err(eyre!("unused"))
+        }
+        fn get_max_rpm(&self) -> color_eyre::Result<f64> {
+            Err(eyre!("unused"))
+        }
+        fn get_threshold(&self, _: ec_test_lib::Threshold) -> color_eyre::Result<f64> {
+            Err(eyre!("unused"))
+        }
+        fn set_rpm(&self, _: f64) -> color_eyre::Result<()> {
+            Err(eyre!("unused"))
+        }
+        fn get_capabilities(&self) -> color_eyre::Result<time_alarm_service_messages::TimeAlarmDeviceCapabilities> {
+            Err(eyre!("unused"))
+        }
+        fn get_real_time(&self) -> color_eyre::Result<time_alarm_service_messages::AcpiTimestamp> {
+            Err(eyre!("unused"))
+        }
+        fn get_wake_status(
+            &self,
+            _: time_alarm_service_messages::AcpiTimerId,
+        ) -> color_eyre::Result<time_alarm_service_messages::TimerStatus> {
+            Err(eyre!("unused"))
+        }
+        fn get_expired_timer_wake_policy(
+            &self,
+            _: time_alarm_service_messages::AcpiTimerId,
+        ) -> color_eyre::Result<time_alarm_service_messages::AlarmExpiredWakePolicy> {
+            Err(eyre!("unused"))
+        }
+        fn get_timer_value(
+            &self,
+            _: time_alarm_service_messages::AcpiTimerId,
+        ) -> color_eyre::Result<time_alarm_service_messages::AlarmTimerSeconds> {
+            Err(eyre!("unused"))
         }
     }
 
     struct ErrSource;
-    impl ErrorType for ErrSource {
-        type Error = TestError;
-    }
-    impl BatterySource for ErrSource {
-        fn get_bst(&self) -> Result<BstReturn, Self::Error> {
-            Err(TestError)
+    impl DynSource for ErrSource {
+        fn get_bst(&self) -> color_eyre::Result<BstReturn> {
+            Err(eyre!("test error"))
         }
-        fn get_bix(&self) -> Result<BixFixedStrings, Self::Error> {
-            Err(TestError)
+        fn get_bix(&self) -> color_eyre::Result<BixFixedStrings> {
+            Err(eyre!("test error"))
         }
-        fn set_btp(&self, _: u32) -> Result<(), Self::Error> {
-            Err(TestError)
+        fn set_btp(&self, _: u32) -> color_eyre::Result<()> {
+            Err(eyre!("test error"))
+        }
+        fn get_temperature(&self) -> color_eyre::Result<f64> {
+            Err(eyre!("unused"))
+        }
+        fn get_rpm(&self) -> color_eyre::Result<f64> {
+            Err(eyre!("unused"))
+        }
+        fn get_min_rpm(&self) -> color_eyre::Result<f64> {
+            Err(eyre!("unused"))
+        }
+        fn get_max_rpm(&self) -> color_eyre::Result<f64> {
+            Err(eyre!("unused"))
+        }
+        fn get_threshold(&self, _: ec_test_lib::Threshold) -> color_eyre::Result<f64> {
+            Err(eyre!("unused"))
+        }
+        fn set_rpm(&self, _: f64) -> color_eyre::Result<()> {
+            Err(eyre!("unused"))
+        }
+        fn get_capabilities(&self) -> color_eyre::Result<time_alarm_service_messages::TimeAlarmDeviceCapabilities> {
+            Err(eyre!("unused"))
+        }
+        fn get_real_time(&self) -> color_eyre::Result<time_alarm_service_messages::AcpiTimestamp> {
+            Err(eyre!("unused"))
+        }
+        fn get_wake_status(
+            &self,
+            _: time_alarm_service_messages::AcpiTimerId,
+        ) -> color_eyre::Result<time_alarm_service_messages::TimerStatus> {
+            Err(eyre!("unused"))
+        }
+        fn get_expired_timer_wake_policy(
+            &self,
+            _: time_alarm_service_messages::AcpiTimerId,
+        ) -> color_eyre::Result<time_alarm_service_messages::AlarmExpiredWakePolicy> {
+            Err(eyre!("unused"))
+        }
+        fn get_timer_value(
+            &self,
+            _: time_alarm_service_messages::AcpiTimerId,
+        ) -> color_eyre::Result<time_alarm_service_messages::AlarmTimerSeconds> {
+            Err(eyre!("unused"))
         }
     }
 

@@ -1,11 +1,12 @@
 use std::sync::{Arc, RwLock, mpsc};
 use std::time::{Duration, Instant};
 
-use ec_test_lib::{Source, Threshold};
+use ec_test_lib::Threshold;
 use time_alarm_service_messages::AcpiTimerId;
 use tracing::{debug, info, trace, warn};
 
 use crate::battery::{poll_bix, poll_bst};
+use crate::source::DynSource;
 use crate::state::{
     BatteryCommand, BatteryState, FanRpmBounds, FanStateLevels, RtcState, SystemState, ThermalCommand, ThermalState,
 };
@@ -13,16 +14,19 @@ use crate::state::{
 // ── Battery ───────────────────────────────────────────────────────────────────
 
 /// Polls BST/BIX and records a graph sample on every tick.
-/// Intended to run every 30 s.
-pub struct BatteryUpdater<S: Source> {
-    source: Arc<S>,
+pub struct BatteryUpdater {
+    source: Arc<dyn DynSource>,
     state: Arc<RwLock<BatteryState>>,
     battery_rx: mpsc::Receiver<BatteryCommand>,
     bix_cached: bool,
 }
 
-impl<S: Source + Send + Sync + 'static> BatteryUpdater<S> {
-    pub fn new(source: Arc<S>, state: Arc<RwLock<BatteryState>>, battery_rx: mpsc::Receiver<BatteryCommand>) -> Self {
+impl BatteryUpdater {
+    pub fn new(
+        source: Arc<dyn DynSource>,
+        state: Arc<RwLock<BatteryState>>,
+        battery_rx: mpsc::Receiver<BatteryCommand>,
+    ) -> Self {
         Self {
             source,
             state,
@@ -91,15 +95,18 @@ impl<S: Source + Send + Sync + 'static> BatteryUpdater<S> {
 // ── Thermal ───────────────────────────────────────────────────────────────────
 
 /// Polls temperature and fan metrics on every tick.
-/// Intended to run every 5 s.
-pub struct ThermalUpdater<S: Source> {
-    source: Arc<S>,
+pub struct ThermalUpdater {
+    source: Arc<dyn DynSource>,
     state: Arc<RwLock<ThermalState>>,
     thermal_rx: mpsc::Receiver<ThermalCommand>,
 }
 
-impl<S: Source + Send + Sync + 'static> ThermalUpdater<S> {
-    pub fn new(source: Arc<S>, state: Arc<RwLock<ThermalState>>, thermal_rx: mpsc::Receiver<ThermalCommand>) -> Self {
+impl ThermalUpdater {
+    pub fn new(
+        source: Arc<dyn DynSource>,
+        state: Arc<RwLock<ThermalState>>,
+        thermal_rx: mpsc::Receiver<ThermalCommand>,
+    ) -> Self {
         Self {
             source,
             state,
@@ -207,15 +214,14 @@ impl<S: Source + Send + Sync + 'static> ThermalUpdater<S> {
 // ── RTC ───────────────────────────────────────────────────────────────────────
 
 /// Polls RTC time, capabilities, and timer state on every tick.
-/// Intended to run every 1 s.
-pub struct RtcUpdater<S: Source> {
-    source: Arc<S>,
+pub struct RtcUpdater {
+    source: Arc<dyn DynSource>,
     state: Arc<RwLock<RtcState>>,
     rtc_caps_cached: bool,
 }
 
-impl<S: Source + Send + Sync + 'static> RtcUpdater<S> {
-    pub fn new(source: Arc<S>, state: Arc<RwLock<RtcState>>) -> Self {
+impl RtcUpdater {
+    pub fn new(source: Arc<dyn DynSource>, state: Arc<RwLock<RtcState>>) -> Self {
         Self {
             source,
             state,
@@ -247,7 +253,7 @@ impl<S: Source + Send + Sync + 'static> RtcUpdater<S> {
             } else if let Err(ref e) = c {
                 warn!(error = %e, "failed to read RTC capabilities");
             }
-            s.capabilities = Some(c.map_err(Into::into));
+            s.capabilities = Some(c);
             if ok {
                 self.rtc_caps_cached = true;
             }
@@ -257,7 +263,7 @@ impl<S: Source + Send + Sync + 'static> RtcUpdater<S> {
             Ok(_) => trace!("RTC timestamp read OK"),
             Err(e) => warn!(error = %e, "failed to read RTC timestamp"),
         }
-        s.timestamp = Some(timestamp.map_err(Into::into));
+        s.timestamp = Some(timestamp);
 
         if let Err(ref e) = ac_value {
             warn!(error = %e, "failed to read AC power timer value");
@@ -266,12 +272,12 @@ impl<S: Source + Send + Sync + 'static> RtcUpdater<S> {
             warn!(error = %e, "failed to read DC power timer value");
         }
 
-        s.timers[0].value = Some(ac_value.map_err(Into::into));
-        s.timers[0].wake_policy = Some(ac_policy.map_err(Into::into));
-        s.timers[0].timer_status = Some(ac_status.map_err(Into::into));
-        s.timers[1].value = Some(dc_value.map_err(Into::into));
-        s.timers[1].wake_policy = Some(dc_policy.map_err(Into::into));
-        s.timers[1].timer_status = Some(dc_status.map_err(Into::into));
+        s.timers[0].value = Some(ac_value);
+        s.timers[0].wake_policy = Some(ac_policy);
+        s.timers[0].timer_status = Some(ac_status);
+        s.timers[1].value = Some(dc_value);
+        s.timers[1].wake_policy = Some(dc_policy);
+        s.timers[1].timer_status = Some(dc_status);
     }
 
     pub async fn run(mut self, interval: Duration) {
