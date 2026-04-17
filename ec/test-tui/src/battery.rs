@@ -186,9 +186,9 @@ impl Battery {
         let bat = state;
         let is_charging = bat.bst.battery_state.contains(BatteryStateFlag::CHARGING);
         let state_str = if is_charging {
-            format!("{} Charging", SYMBOLS.charging)
+            format!("{} Charging ", SYMBOLS.charging)
         } else {
-            format!("{} Discharging", SYMBOLS.discharging)
+            format!("{} Discharging ", SYMBOLS.discharging)
         };
         let state_color = if is_charging {
             tailwind::GREEN.c400

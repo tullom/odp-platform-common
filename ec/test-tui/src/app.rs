@@ -27,10 +27,9 @@ use std::{
 
 use strum::{Display, EnumIter, FromRepr, IntoEnumIterator};
 
-/// Enum wrapping all UI modules.  Methods dispatch to the concrete type
-/// without dynamic dispatch or heap allocation.
+/// Enum wrapping all UI modules.
 pub(crate) enum TabModule {
-    Battery(Battery),
+    Power(Battery),
     Thermal(Thermal),
     Rtc(Rtc),
     System(System),
@@ -39,24 +38,24 @@ pub(crate) enum TabModule {
 impl TabModule {
     pub(crate) fn title(&self) -> &'static str {
         match self {
-            Self::Battery(_) => "Battery Information",
-            Self::Thermal(_) => "Thermal Information",
-            Self::Rtc(_) => "RTC Information",
-            Self::System(_) => "System Information",
+            Self::Power(_) => "Power",
+            Self::Thermal(_) => "Thermal",
+            Self::Rtc(_) => "RTC",
+            Self::System(_) => "System",
         }
     }
 
     pub(crate) fn handle_event(&mut self, evt: &Event) {
         match self {
-            Self::Battery(m) => m.handle_event(evt),
+            Self::Power(m) => m.handle_event(evt),
             Self::Thermal(m) => m.handle_event(evt),
             Self::Rtc(m) => m.handle_event(evt),
             Self::System(m) => m.handle_event(evt),
         }
     }
 
-    pub(crate) fn render_battery(&self, state: &BatteryState, area: Rect, buf: &mut Buffer) {
-        if let Self::Battery(m) = self {
+    pub(crate) fn render_power(&self, state: &BatteryState, area: Rect, buf: &mut Buffer) {
+        if let Self::Power(m) = self {
             m.render(state, area, buf);
         }
     }
@@ -73,14 +72,20 @@ impl TabModule {
         }
     }
 
-    pub(crate) fn render_system(&self, state: &SystemState, area: Rect, buf: &mut Buffer) {
+    pub(crate) fn render_system(
+        &self,
+        state: &SystemState,
+        thermal_state: Option<&ThermalState>,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
         if let Self::System(m) = self {
-            m.render(state, area, buf);
+            m.render(state, thermal_state, area, buf);
         }
     }
 
-    pub(crate) fn render_card_battery(&self, state: &BatteryState, area: Rect, buf: &mut Buffer) {
-        if let Self::Battery(m) = self {
+    pub(crate) fn render_card_power(&self, state: &BatteryState, area: Rect, buf: &mut Buffer) {
+        if let Self::Power(m) = self {
             m.render_card(state, area, buf);
         }
     }
@@ -105,7 +110,7 @@ impl TabModule {
 
     pub(crate) fn is_popup_open(&self) -> bool {
         match self {
-            Self::Battery(m) => m.is_popup_open(),
+            Self::Power(m) => m.is_popup_open(),
             Self::Thermal(m) => m.is_popup_open(),
             Self::Rtc(_) | Self::System(_) => false,
         }
@@ -124,8 +129,8 @@ enum SelectedTab {
     #[default]
     #[strum(to_string = "Dashboard")]
     TabDashboard,
-    #[strum(to_string = "Battery")]
-    TabBattery,
+    #[strum(to_string = "Power")]
+    TabPower,
     #[strum(to_string = "Thermal")]
     TabThermal,
     #[strum(to_string = "RTC")]
@@ -164,7 +169,7 @@ impl App {
         log_buffer: LogBuffer,
     ) -> Self {
         let modules = [
-            TabModule::Battery(Battery::new(battery_tx)),
+            TabModule::Power(Battery::new(battery_tx)),
             TabModule::Thermal(Thermal::new(thermal_tx)),
             TabModule::Rtc(Rtc::new()),
             TabModule::System(System::new()),
@@ -235,7 +240,7 @@ impl App {
                     self.log_scroll = self.log_scroll.saturating_sub(1);
                 }
                 KeyCode::Char('1') => self.selected_tab = SelectedTab::TabDashboard,
-                KeyCode::Char('2') => self.selected_tab = SelectedTab::TabBattery,
+                KeyCode::Char('2') => self.selected_tab = SelectedTab::TabPower,
                 KeyCode::Char('3') => self.selected_tab = SelectedTab::TabThermal,
                 KeyCode::Char('4') => self.selected_tab = SelectedTab::TabRTC,
                 KeyCode::Char('5') => self.selected_tab = SelectedTab::TabSystem,
@@ -300,10 +305,14 @@ impl App {
             let inner = block.inner(area);
             block.render(area, buf);
             match i {
-                0 => module.render_battery(&self.battery_state.read().expect("battery RwLock poisoned"), inner, buf),
+                0 => module.render_power(&self.battery_state.read().expect("battery RwLock poisoned"), inner, buf),
                 1 => module.render_thermal(&self.thermal_state.read().expect("thermal RwLock poisoned"), inner, buf),
                 2 => module.render_rtc(&self.rtc_state.read().expect("rtc RwLock poisoned"), inner, buf),
-                3 => module.render_system(&self.system_state.read().expect("system RwLock poisoned"), inner, buf),
+                3 => {
+                    let sys = self.system_state.read().expect("system RwLock poisoned");
+                    let thm = self.thermal_state.read().expect("thermal RwLock poisoned");
+                    module.render_system(&sys, Some(&thm), inner, buf);
+                }
                 _ => unreachable!(),
             }
         }
@@ -325,7 +334,7 @@ impl App {
         let rtc = self.rtc_state.read().expect("rtc RwLock poisoned");
         let sys = self.system_state.read().expect("system RwLock poisoned");
 
-        self.modules[0].render_card_battery(&bat, card00, buf);
+        self.modules[0].render_card_power(&bat, card00, buf);
         self.modules[1].render_card_thermal(&thm, card01, buf);
         self.modules[2].render_card_rtc(&rtc, card10, buf);
         self.modules[3].render_card_system(&sys, card11, buf);
@@ -441,7 +450,7 @@ impl App {
                 Span::styled(" scroll logs  ", desc),
             ]);
         }
-        let show_set = matches!(self.selected_tab, SelectedTab::TabBattery | SelectedTab::TabThermal);
+        let show_set = matches!(self.selected_tab, SelectedTab::TabPower | SelectedTab::TabThermal);
         if show_set {
             spans.extend([Span::styled("  s ", key), Span::styled(" set value  ", desc)]);
         }
@@ -456,7 +465,7 @@ impl SelectedTab {
     fn module_index(self) -> Option<usize> {
         match self {
             Self::TabDashboard => None,
-            Self::TabBattery => Some(0),
+            Self::TabPower => Some(0),
             Self::TabThermal => Some(1),
             Self::TabRTC => Some(2),
             Self::TabSystem => Some(3),
@@ -506,7 +515,7 @@ impl SelectedTab {
     const fn palette(self) -> tailwind::Palette {
         match self {
             Self::TabDashboard => tailwind::SLATE,
-            Self::TabBattery => tailwind::SKY,
+            Self::TabPower => tailwind::SKY,
             Self::TabThermal => tailwind::ORANGE,
             Self::TabRTC => tailwind::VIOLET,
             Self::TabSystem => tailwind::EMERALD,
