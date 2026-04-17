@@ -107,12 +107,12 @@ fn thermal_zone(temp: f64, thresholds: &SensorThresholds) -> &'static str {
     }
 }
 
-fn fan_zone(rpm: f64, levels: &FanStateLevels) -> &'static str {
-    if rpm >= levels.max {
+fn fan_zone(temp: f64, levels: &FanStateLevels) -> &'static str {
+    if temp >= levels.max {
         "Max"
-    } else if rpm >= levels.ramping {
+    } else if temp >= levels.ramping {
         "Ramping"
-    } else if rpm >= levels.on {
+    } else if temp >= levels.on {
         "On"
     } else {
         "Off"
@@ -377,6 +377,7 @@ impl Thermal {
 
     fn render_fan_compact(&self, state: &ThermalState, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
+        let s = &state.sensor;
         let f = &state.fan;
 
         let block = Block::bordered()
@@ -389,7 +390,7 @@ impl Thermal {
             Layout::vertical([Length(1), Length(1), Length(4), Min(0)]).areas(inner);
 
         // Current RPM + zone
-        let zone_str = fan_zone(f.rpm, &f.state_levels);
+        let zone_str = fan_zone(s.skin_temp, &f.state_levels);
         let zone_color = fan_zone_color(f.rpm, &f.state_levels);
         Line::from(vec![
             Span::styled(
@@ -448,7 +449,7 @@ impl Thermal {
                 format!("{:.0} {}C", f.state_levels.ramping, SYMBOLS.degree),
                 common::palette::LABEL,
             ),
-            common::metric_row("Limit   ", limit_str, limit_color),
+            common::metric_row("Override", limit_str, limit_color),
         ])
         .render(info_area, buf);
 
