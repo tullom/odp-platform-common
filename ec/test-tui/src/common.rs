@@ -58,10 +58,6 @@ pub(crate) struct Symbols {
     pub h_line: &'static str,
     /// Middle dot separator (e.g. `"·"` or `"."`).
     pub mid_dot: &'static str,
-    /// Filled block for mini progress bars (e.g. `"█"` or `"#"`).
-    pub bar_full: &'static str,
-    /// Empty block for mini progress bars (e.g. `"░"` or `"."`).
-    pub bar_empty: &'static str,
 }
 
 /// Application-wide symbol set, selected once at startup via [`unicode_enabled()`].
@@ -80,8 +76,6 @@ pub(crate) static SYMBOLS: LazyLock<Symbols> = LazyLock::new(|| {
             warning: "⚠",
             h_line: "─",
             mid_dot: "·",
-            bar_full: "█",
-            bar_empty: "░",
         }
     } else {
         Symbols {
@@ -97,8 +91,6 @@ pub(crate) static SYMBOLS: LazyLock<Symbols> = LazyLock::new(|| {
             warning: "!",
             h_line: "-",
             mid_dot: ".",
-            bar_full: "#",
-            bar_empty: ".",
         }
     }
 });
@@ -115,13 +107,31 @@ pub(crate) static CHART_MARKER: LazyLock<symbols::Marker> = LazyLock::new(|| {
     }
 });
 
+// ── Global color constants ────────────────────────────────────────────────────
+
+/// Consistent color palette for metric types across all tabs.
+#[allow(dead_code)]
+pub(crate) mod palette {
+    use ratatui::style::{Color, palette::tailwind};
+
+    pub const TEMP: Color = tailwind::ORANGE.c400;
+    pub const FAN: Color = tailwind::SKY.c400;
+    pub const BATTERY: Color = tailwind::SKY.c400;
+    pub const CPU: Color = tailwind::EMERALD.c400;
+    pub const MEM: Color = tailwind::SKY.c400;
+    pub const NET_RX: Color = tailwind::VIOLET.c400;
+    pub const NET_TX: Color = tailwind::AMBER.c400;
+    pub const LABEL: Color = tailwind::SLATE.c400;
+    pub const SUCCESS: Color = tailwind::GREEN.c400;
+    pub const FAILURE: Color = tailwind::RED.c500;
+}
+
 #[derive(Default)]
 pub struct SampleBuf<T, const N: usize> {
     samples: VecDeque<T>,
 }
 
 impl<T: Into<f64> + Copy, const N: usize> SampleBuf<T, N> {
-    // Insert a sample into the buffer and evict the oldest if full
     pub fn insert(&mut self, sample: T) {
         self.samples.push_back(sample);
         if self.samples.len() > N {
@@ -129,8 +139,7 @@ impl<T: Into<f64> + Copy, const N: usize> SampleBuf<T, N> {
         }
     }
 
-    // Converts the buffer into a format that ratatui can use
-    // Probably more efficent way than copying but buffer is small and only called once a second
+    /// Converts the buffer into `(x, y)` pairs for ratatui charts.
     pub fn get(&self) -> Vec<(f64, f64)> {
         self.samples
             .iter()
@@ -140,7 +149,7 @@ impl<T: Into<f64> + Copy, const N: usize> SampleBuf<T, N> {
     }
 }
 
-// Properties for rendering a graph
+/// Properties for rendering a full-size line chart.
 pub struct Graph {
     pub title: String,
     pub color: Color,
@@ -155,9 +164,8 @@ pub struct Graph {
     pub y_labels: [Span<'static>; 3],
 }
 
-// Split an area in a direction with given percentages
+/// Split an area in a direction with given percentages.
 pub fn area_split(area: Rect, direction: Direction, first: u16, second: u16) -> [Rect; 2] {
-    // SAFETY: We always split into exactly 2 constraints, so the conversion is infallible.
     Layout::default()
         .direction(direction)
         .constraints([Constraint::Percentage(first), Constraint::Percentage(second)])
@@ -176,21 +184,15 @@ pub fn title_block(title: impl Into<Line<'static>>, padding: u16, label_color: C
 }
 
 /// Returns a [`Line`] with a colored status dot followed by `title`.
-///
-/// The dot is green on success and red on failure, providing a compact
-/// visual health indicator that renders reliably without terminal emoji.
 pub fn status_title(title: impl Into<String>, success: bool) -> Line<'static> {
-    let color = if success {
-        tailwind::GREEN.c400
-    } else {
-        tailwind::RED.c500
-    };
+    let color = if success { palette::SUCCESS } else { palette::FAILURE };
     Line::from(vec![
-        Span::styled(format!("{} ", SYMBOLS.dot), Style::default().fg(color)),
-        Span::raw(title.into()),
+        Span::styled(format!(" {} ", SYMBOLS.dot), Style::default().fg(color)),
+        Span::raw(format!("{} ", title.into())),
     ])
 }
 
+/// Render a full-size chart with axes and labels.
 pub fn render_chart(area: Rect, buf: &mut Buffer, graph: Graph) {
     let samples = &graph.samples[..];
     let datasets = vec![
@@ -221,6 +223,32 @@ pub fn render_chart(area: Rect, buf: &mut Buffer, graph: Graph) {
     chart.render(area, buf);
 }
 
+/// Render a compact sparkline chart — no axes, no labels, just the line.
+///
+/// The chart fills the given `area` entirely.  Intended for areas of 3–5 rows
+/// height.  Falls back to a blank area if `area.height < 2`.
+pub fn render_sparkline(area: Rect, buf: &mut Buffer, samples: &[(f64, f64)], color: Color, y_bounds: [f64; 2]) {
+    if area.height < 2 || samples.is_empty() {
+        return;
+    }
+
+    let datasets = vec![
+        Dataset::default()
+            .marker(*CHART_MARKER)
+            .style(Style::default().fg(color))
+            .graph_type(GraphType::Line)
+            .data(samples),
+    ];
+
+    let x_max = samples.last().map_or(60.0, |&(x, _)| x).max(1.0);
+
+    Chart::new(datasets)
+        .block(Block::bordered().border_style(Style::default().fg(tailwind::SLATE.c800)))
+        .x_axis(Axis::default().bounds([0.0, x_max]))
+        .y_axis(Axis::default().bounds(y_bounds))
+        .render(area, buf);
+}
+
 pub fn time_labels(max_samples: usize) -> [Span<'static>; 3] {
     [
         Span::styled("0", Style::default().bold()),
@@ -241,15 +269,10 @@ pub fn metric_row<'a>(label: &'a str, value: impl Into<String>, label_color: Col
 }
 
 /// A horizontal gauge with up to four colored threshold bands.
-///
-/// Bands are drawn left-to-right in ascending `value` order. The `ratio`
-/// (0.0–1.0) is the current fill fraction; the gauge itself is filled up to
-/// that point using whichever band color applies.
 pub struct ThresholdGauge<'a> {
     pub ratio: f64,
     pub label: Option<Span<'a>>,
-    /// (threshold_ratio, color_above) pairs sorted ascending.  The last
-    /// entry's color is used for any ratio above that threshold.
+    /// (threshold_ratio, color_above) pairs sorted ascending.
     pub thresholds: &'a [(f64, Color)],
     pub track_color: Color,
 }
@@ -277,9 +300,6 @@ impl Widget for ThresholdGauge<'_> {
 }
 
 /// Render a centered input popup overlay.
-///
-/// Clears the area with [`Clear`] before rendering so the popup paints over
-/// whatever is already in the buffer at that position.
 pub fn render_input_popup(area: Rect, buf: &mut Buffer, title: &str, value: &str) {
     let popup_w = 52u16.min(area.width);
     let popup_h = 5u16;
@@ -303,28 +323,4 @@ pub fn render_input_popup(area: Rect, buf: &mut Buffer, title: &str, value: &str
     let inner = block.inner(popup);
     block.render(popup, buf);
     Paragraph::new(format!("> {value}")).render(inner, buf);
-}
-
-/// Minimal test doubles shared across module test suites.
-#[cfg(test)]
-pub(crate) mod test_support {
-    use ec_test_lib::{Error as EcError, ErrorKind};
-
-    /// A zero-size error type that always maps to [`ErrorKind::Other`].
-    #[derive(Debug)]
-    pub(crate) struct TestError;
-
-    impl std::fmt::Display for TestError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "test error")
-        }
-    }
-
-    impl std::error::Error for TestError {}
-
-    impl EcError for TestError {
-        fn kind(&self) -> ErrorKind {
-            ErrorKind::Other
-        }
-    }
 }

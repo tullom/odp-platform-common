@@ -1,9 +1,9 @@
 use crate::common::{self, SYMBOLS, unicode_enabled};
-use crate::state::{AppState, BatteryCommand, BatteryState};
+use crate::source::DynSource;
+use crate::state::{BatteryCommand, BatteryState};
 use crate::widgets::battery;
 use battery_service_messages::{BatteryState as BatteryStateFlag, BatterySwapCapability, BatteryTechnology, PowerUnit};
 use core::ffi::CStr;
-use ec_test_lib::BatterySource;
 use std::sync::mpsc;
 use tracing::{debug, instrument, warn};
 
@@ -75,7 +75,7 @@ fn swap_cap_as_str(swap_cap: BatterySwapCapability) -> &'static str {
 
 /// Fetch the latest BST reading into `state`.
 #[instrument(skip_all)]
-pub(crate) fn poll_bst(state: &mut BatteryState, source: &impl BatterySource) {
+pub(crate) fn poll_bst(state: &mut BatteryState, source: &dyn DynSource) {
     match source.get_bst() {
         Ok(bst) => {
             debug!(
@@ -95,7 +95,7 @@ pub(crate) fn poll_bst(state: &mut BatteryState, source: &impl BatterySource) {
 
 /// Fetch static BIX info into `state` (call until `state.bix_success` is true).
 #[instrument(skip_all)]
-pub(crate) fn poll_bix(state: &mut BatteryState, source: &impl BatterySource) {
+pub(crate) fn poll_bix(state: &mut BatteryState, source: &dyn DynSource) {
     match source.get_bix() {
         Ok(bix) => {
             debug!("BIX read OK");
@@ -166,7 +166,7 @@ impl Battery {
         }
     }
 
-    pub(crate) fn render(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    pub(crate) fn render(&self, state: &BatteryState, area: Rect, buf: &mut Buffer) {
         use Constraint::{Min, Percentage};
         let [strip_area, bottom_area] = Layout::vertical([Percentage(22), Min(0)]).areas(area);
         let [bix_area, chart_area] = Layout::horizontal([Percentage(50), Percentage(50)]).areas(bottom_area);
@@ -176,19 +176,19 @@ impl Battery {
         self.render_bst_chart(state, chart_area, buf);
 
         if self.popup_open {
-            let cap_unit = power_unit_as_capacity_str(state.battery.bix.power_unit);
+            let cap_unit = power_unit_as_capacity_str(state.bix.power_unit);
             let title = format!(" Set Battery Trippoint ({cap_unit}) ");
             common::render_input_popup(area, buf, &title, self.popup_input.value());
         }
     }
 
-    pub(crate) fn render_card(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        let bat = &state.battery;
+    pub(crate) fn render_card(&self, state: &BatteryState, area: Rect, buf: &mut Buffer) {
+        let bat = state;
         let is_charging = bat.bst.battery_state.contains(BatteryStateFlag::CHARGING);
         let state_str = if is_charging {
-            format!("{} Charging", SYMBOLS.charging)
+            format!("{} Charging ", SYMBOLS.charging)
         } else {
-            format!("{} Discharging", SYMBOLS.discharging)
+            format!("{} Discharging ", SYMBOLS.discharging)
         };
         let state_color = if is_charging {
             tailwind::GREEN.c400
@@ -315,9 +315,9 @@ fn estimate_time(remaining: u32, design: u32, last_full: u32, rate: u32, is_char
 // ── Render helpers (private, methods on Battery) ──────────────────────────────
 
 impl Battery {
-    fn render_status_strip(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    fn render_status_strip(&self, state: &BatteryState, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
-        let bat = &state.battery;
+        let bat = state;
         let is_charging = bat.bst.battery_state.contains(BatteryStateFlag::CHARGING);
         let state_str = if is_charging {
             format!("{} Charging", SYMBOLS.charging)
@@ -389,8 +389,8 @@ impl Battery {
             .render(bat_area, buf, &mut bat_widget_state);
     }
 
-    fn render_bst_chart(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        let bat = &state.battery;
+    fn render_bst_chart(&self, state: &BatteryState, area: Rect, buf: &mut Buffer) {
+        let bat = state;
         let y_labels = [
             "0".bold(),
             Span::styled(format!("{}", bat.bix.design_capacity / 2), Style::default().bold()),
@@ -516,8 +516,8 @@ impl Battery {
         ]
     }
 
-    fn render_bix(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        let bat = &state.battery;
+    fn render_bix(&self, state: &BatteryState, area: Rect, buf: &mut Buffer) {
+        let bat = state;
         let table = Table::new(self.bix_rows(bat), [Constraint::Min(22), Constraint::Fill(1)])
             .block(
                 Block::bordered()
@@ -532,18 +532,15 @@ impl Battery {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::test_support::TestError;
+    use crate::source::DynSource;
     use battery_service_messages::{BatterySwapCapability, BatteryTechnology, BixFixedStrings, BstReturn, PowerUnit};
-    use ec_test_lib::{BatterySource, ErrorType};
+    use color_eyre::eyre::eyre;
 
     // ── test doubles ─────────────────────────────────────────────────────────
 
     struct OkSource;
-    impl ErrorType for OkSource {
-        type Error = TestError;
-    }
-    impl BatterySource for OkSource {
-        fn get_bst(&self) -> Result<BstReturn, Self::Error> {
+    impl DynSource for OkSource {
+        fn get_bst(&self) -> color_eyre::Result<BstReturn> {
             Ok(BstReturn {
                 battery_state: BatteryStateFlag::CHARGING,
                 battery_present_rate: 1000,
@@ -551,7 +548,7 @@ mod tests {
                 battery_present_voltage: 12000,
             })
         }
-        fn get_bix(&self) -> Result<BixFixedStrings, Self::Error> {
+        fn get_bix(&self) -> color_eyre::Result<BixFixedStrings> {
             Ok(BixFixedStrings {
                 design_capacity: 10000,
                 cycle_count: 42,
@@ -559,24 +556,105 @@ mod tests {
                 ..Default::default()
             })
         }
-        fn set_btp(&self, _: u32) -> Result<(), Self::Error> {
+        fn set_btp(&self, _: u32) -> color_eyre::Result<()> {
             Ok(())
+        }
+        fn get_temperature(&self) -> color_eyre::Result<f64> {
+            Err(eyre!("unused"))
+        }
+        fn get_rpm(&self) -> color_eyre::Result<f64> {
+            Err(eyre!("unused"))
+        }
+        fn get_min_rpm(&self) -> color_eyre::Result<f64> {
+            Err(eyre!("unused"))
+        }
+        fn get_max_rpm(&self) -> color_eyre::Result<f64> {
+            Err(eyre!("unused"))
+        }
+        fn get_threshold(&self, _: ec_test_lib::Threshold) -> color_eyre::Result<f64> {
+            Err(eyre!("unused"))
+        }
+        fn set_rpm(&self, _: f64) -> color_eyre::Result<()> {
+            Err(eyre!("unused"))
+        }
+        fn get_capabilities(&self) -> color_eyre::Result<time_alarm_service_messages::TimeAlarmDeviceCapabilities> {
+            Err(eyre!("unused"))
+        }
+        fn get_real_time(&self) -> color_eyre::Result<time_alarm_service_messages::AcpiTimestamp> {
+            Err(eyre!("unused"))
+        }
+        fn get_wake_status(
+            &self,
+            _: time_alarm_service_messages::AcpiTimerId,
+        ) -> color_eyre::Result<time_alarm_service_messages::TimerStatus> {
+            Err(eyre!("unused"))
+        }
+        fn get_expired_timer_wake_policy(
+            &self,
+            _: time_alarm_service_messages::AcpiTimerId,
+        ) -> color_eyre::Result<time_alarm_service_messages::AlarmExpiredWakePolicy> {
+            Err(eyre!("unused"))
+        }
+        fn get_timer_value(
+            &self,
+            _: time_alarm_service_messages::AcpiTimerId,
+        ) -> color_eyre::Result<time_alarm_service_messages::AlarmTimerSeconds> {
+            Err(eyre!("unused"))
         }
     }
 
     struct ErrSource;
-    impl ErrorType for ErrSource {
-        type Error = TestError;
-    }
-    impl BatterySource for ErrSource {
-        fn get_bst(&self) -> Result<BstReturn, Self::Error> {
-            Err(TestError)
+    impl DynSource for ErrSource {
+        fn get_bst(&self) -> color_eyre::Result<BstReturn> {
+            Err(eyre!("test error"))
         }
-        fn get_bix(&self) -> Result<BixFixedStrings, Self::Error> {
-            Err(TestError)
+        fn get_bix(&self) -> color_eyre::Result<BixFixedStrings> {
+            Err(eyre!("test error"))
         }
-        fn set_btp(&self, _: u32) -> Result<(), Self::Error> {
-            Err(TestError)
+        fn set_btp(&self, _: u32) -> color_eyre::Result<()> {
+            Err(eyre!("test error"))
+        }
+        fn get_temperature(&self) -> color_eyre::Result<f64> {
+            Err(eyre!("unused"))
+        }
+        fn get_rpm(&self) -> color_eyre::Result<f64> {
+            Err(eyre!("unused"))
+        }
+        fn get_min_rpm(&self) -> color_eyre::Result<f64> {
+            Err(eyre!("unused"))
+        }
+        fn get_max_rpm(&self) -> color_eyre::Result<f64> {
+            Err(eyre!("unused"))
+        }
+        fn get_threshold(&self, _: ec_test_lib::Threshold) -> color_eyre::Result<f64> {
+            Err(eyre!("unused"))
+        }
+        fn set_rpm(&self, _: f64) -> color_eyre::Result<()> {
+            Err(eyre!("unused"))
+        }
+        fn get_capabilities(&self) -> color_eyre::Result<time_alarm_service_messages::TimeAlarmDeviceCapabilities> {
+            Err(eyre!("unused"))
+        }
+        fn get_real_time(&self) -> color_eyre::Result<time_alarm_service_messages::AcpiTimestamp> {
+            Err(eyre!("unused"))
+        }
+        fn get_wake_status(
+            &self,
+            _: time_alarm_service_messages::AcpiTimerId,
+        ) -> color_eyre::Result<time_alarm_service_messages::TimerStatus> {
+            Err(eyre!("unused"))
+        }
+        fn get_expired_timer_wake_policy(
+            &self,
+            _: time_alarm_service_messages::AcpiTimerId,
+        ) -> color_eyre::Result<time_alarm_service_messages::AlarmExpiredWakePolicy> {
+            Err(eyre!("unused"))
+        }
+        fn get_timer_value(
+            &self,
+            _: time_alarm_service_messages::AcpiTimerId,
+        ) -> color_eyre::Result<time_alarm_service_messages::AlarmTimerSeconds> {
+            Err(eyre!("unused"))
         }
     }
 

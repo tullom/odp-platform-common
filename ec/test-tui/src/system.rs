@@ -7,8 +7,8 @@ use ratatui::{
     widgets::{Axis, Block, Chart, Dataset, GraphType, Paragraph, Widget},
 };
 
-use crate::common::{self, CHART_MARKER, Graph, SYMBOLS};
-use crate::state::{AppState, SYSTEM_MAX_SAMPLES};
+use crate::common::{self, CHART_MARKER, SYMBOLS};
+use crate::state::{SYSTEM_MAX_SAMPLES, SystemState, ThermalState};
 
 const LABEL_COLOR: Color = tailwind::SLATE.c400;
 const CPU_COLOR: Color = tailwind::EMERALD.c400;
@@ -28,19 +28,19 @@ impl System {
 
     pub fn handle_event(&mut self, _evt: &Event) {}
 
-    pub fn render(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    pub fn render(&self, state: &SystemState, thermal_state: Option<&ThermalState>, area: Rect, buf: &mut Buffer) {
         let [top_area, bottom_area] =
             Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(area);
         let [cpu_area, mem_area] = common::area_split(top_area, Direction::Horizontal, 50, 50);
 
-        self.render_cpu(state, cpu_area, buf);
+        self.render_cpu(state, thermal_state, cpu_area, buf);
         self.render_memory(state, mem_area, buf);
         self.render_network(state, bottom_area, buf);
     }
 
-    pub fn render_card(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    pub fn render_card(&self, state: &SystemState, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
-        let s = &state.system;
+        let s = state;
 
         let block = Block::bordered()
             .title(common::status_title(
@@ -113,9 +113,9 @@ impl Default for System {
 // ── Private render helpers ────────────────────────────────────────────────────
 
 impl System {
-    fn render_cpu(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    fn render_cpu(&self, state: &SystemState, thermal_state: Option<&ThermalState>, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
-        let cpu = &state.system.cpu;
+        let cpu = &state.cpu;
 
         let block = Block::bordered()
             .title(common::status_title("CPU", cpu.success))
@@ -123,15 +123,23 @@ impl System {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let num_cores = cpu.per_core.len().min(64);
-        let core_rows = num_cores.min(16) as u16;
-        let [usage_line, usage_gauge, cores_area, chart_area] =
-            Layout::vertical([Length(1), Length(1), Length(core_rows), Min(0)]).areas(inner);
+        let num_cores = cpu.per_core.len().min(128);
+        let core_line_count = if num_cores > 0 { 1u16 } else { 0 };
+        let skin_temp_line = if thermal_state.is_some() { 1u16 } else { 0 };
 
-        // Overall
+        let [usage_line, usage_gauge, temp_line, cores_area, spark_area] = Layout::vertical([
+            Length(1),
+            Length(1),
+            Length(skin_temp_line),
+            Length(core_line_count),
+            Min(0),
+        ])
+        .areas(inner);
+
+        // Overall usage
         common::metric_row(
             "Overall",
-            format!("{:.1}%  ({} cores)", cpu.usage, cpu.per_core.len()),
+            format!("{:.1}%  ({num_cores} cores)", cpu.usage),
             LABEL_COLOR,
         )
         .render(usage_line, buf);
@@ -148,59 +156,43 @@ impl System {
         }
         .render(usage_gauge, buf);
 
-        // Per-core grid: up to 4 columns × 16 rows = 64 cores
-        let cols_used = num_cores.div_ceil(16).clamp(1, 4);
-        let col_areas =
-            Layout::horizontal((0..cols_used).map(|_| Constraint::Ratio(1, cols_used as u32))).split(cores_area);
+        // Skin temperature from EC (cross-read from ThermalState)
+        if let Some(th) = thermal_state {
+            let temp_color = if th.sensor.temp_success {
+                common::palette::TEMP
+            } else {
+                tailwind::SLATE.c600
+            };
+            common::metric_row(
+                "Skin   ",
+                format!("{:.1} {}C", th.sensor.skin_temp, SYMBOLS.degree),
+                temp_color,
+            )
+            .render(temp_line, buf);
+        }
 
-        for col in 0..cols_used {
-            let start = col * 16;
-            let slice = &cpu.per_core[start..cpu.per_core.len().min(start + 16)];
-            let lines: Vec<Line<'_>> = slice
+        // Compact per-core bar: one character per core
+        if num_cores > 0 {
+            let spans: Vec<Span<'_>> = cpu
+                .per_core
                 .iter()
-                .enumerate()
-                .map(|(row, &pct)| {
-                    let i = start + row;
-                    let p = pct as f64;
-                    let color = usage_color(p);
-                    Line::from(vec![
-                        Span::styled(format!("{i:>2} "), Style::default().fg(LABEL_COLOR)),
-                        Span::styled(format!("{p:>5.1}%"), Style::default().fg(color).bold()),
-                        Span::raw(" "),
-                        Span::styled(mini_bar(p, 8), Style::default().fg(color)),
-                    ])
+                .take(num_cores)
+                .map(|&pct| {
+                    let color = usage_color(pct as f64);
+                    Span::styled(core_bar_char(pct as f64), Style::default().fg(color))
                 })
                 .collect();
-            Paragraph::new(lines).render(col_areas[col], buf);
+            Line::from(spans).render(cores_area, buf);
         }
 
-        // History chart
-        if chart_area.height > 3 {
-            common::render_chart(
-                chart_area,
-                buf,
-                Graph {
-                    title: "CPU Usage %".to_string(),
-                    color: CPU_COLOR,
-                    samples: cpu.samples.get(),
-                    x_axis: String::new(),
-                    x_bounds: [0.0, SYSTEM_MAX_SAMPLES as f64],
-                    x_labels: common::time_labels(SYSTEM_MAX_SAMPLES),
-                    y_axis: "%".to_string(),
-                    y_bounds: [0.0, 100.0],
-                    y_labels: [
-                        Span::styled("0", Style::default().bold()),
-                        Span::styled("50", Style::default().bold()),
-                        Span::styled("100", Style::default().bold()),
-                    ],
-                },
-            );
-        }
+        // Sparkline
+        let samples = cpu.samples.get();
+        common::render_sparkline(spark_area, buf, &samples, CPU_COLOR, [0.0, 100.0]);
     }
 
-    fn render_memory(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    fn render_memory(&self, state: &SystemState, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
-        let mem = &state.system.memory;
+        let mem = &state.memory;
 
         let block = Block::bordered()
             .title(common::status_title("Memory", mem.success))
@@ -210,9 +202,14 @@ impl System {
 
         let ram_ratio = mem_ratio(mem.used_bytes, mem.total_bytes);
         let swap_ratio = mem_ratio(mem.swap_used_bytes, mem.swap_total_bytes);
+        let has_swap = mem.swap_total_bytes > 0;
 
-        let [ram_line, ram_gauge, avail_line, swap_line, swap_gauge, chart_area] =
-            Layout::vertical([Length(1), Length(1), Length(1), Length(1), Length(1), Min(0)]).areas(inner);
+        let base_rows: Vec<Constraint> = if has_swap {
+            vec![Length(1), Length(1), Length(1), Length(1), Length(1), Min(0)]
+        } else {
+            vec![Length(1), Length(1), Length(1), Min(0)]
+        };
+        let areas = Layout::vertical(base_rows).split(inner);
 
         common::metric_row(
             "RAM   ",
@@ -224,7 +221,7 @@ impl System {
             ),
             LABEL_COLOR,
         )
-        .render(ram_line, buf);
+        .render(areas[0], buf);
 
         common::ThresholdGauge {
             ratio: ram_ratio,
@@ -236,16 +233,16 @@ impl System {
             ],
             track_color: tailwind::SLATE.c800,
         }
-        .render(ram_gauge, buf);
+        .render(areas[1], buf);
 
         common::metric_row(
             "Avail ",
             format_bytes(mem.total_bytes.saturating_sub(mem.used_bytes)),
             LABEL_COLOR,
         )
-        .render(avail_line, buf);
+        .render(areas[2], buf);
 
-        if mem.swap_total_bytes > 0 {
+        let spark_area = if has_swap {
             common::metric_row(
                 "Swap  ",
                 format!(
@@ -256,7 +253,7 @@ impl System {
                 ),
                 LABEL_COLOR,
             )
-            .render(swap_line, buf);
+            .render(areas[3], buf);
 
             common::ThresholdGauge {
                 ratio: swap_ratio,
@@ -268,35 +265,20 @@ impl System {
                 ],
                 track_color: tailwind::SLATE.c800,
             }
-            .render(swap_gauge, buf);
-        }
+            .render(areas[4], buf);
 
-        if chart_area.height > 3 {
-            common::render_chart(
-                chart_area,
-                buf,
-                Graph {
-                    title: "RAM Usage %".to_string(),
-                    color: MEM_COLOR,
-                    samples: mem.samples.get(),
-                    x_axis: String::new(),
-                    x_bounds: [0.0, SYSTEM_MAX_SAMPLES as f64],
-                    x_labels: common::time_labels(SYSTEM_MAX_SAMPLES),
-                    y_axis: "%".to_string(),
-                    y_bounds: [0.0, 100.0],
-                    y_labels: [
-                        Span::styled("0", Style::default().bold()),
-                        Span::styled("50", Style::default().bold()),
-                        Span::styled("100", Style::default().bold()),
-                    ],
-                },
-            );
-        }
+            areas[5]
+        } else {
+            areas[3]
+        };
+
+        let samples = mem.samples.get();
+        common::render_sparkline(spark_area, buf, &samples, MEM_COLOR, [0.0, 100.0]);
     }
 
-    fn render_network(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    fn render_network(&self, state: &SystemState, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
-        let net = &state.system.network;
+        let net = &state.network;
 
         let block = Block::bordered()
             .title(common::status_title("Network", net.success))
@@ -427,12 +409,36 @@ fn usage_color(pct: f64) -> Color {
     }
 }
 
-/// Render a compact ASCII progress bar of the given `width` in characters.
-fn mini_bar(pct: f64, width: usize) -> String {
-    let filled = ((pct / 100.0) * width as f64).round() as usize;
-    let filled = filled.min(width);
-    let empty = width - filled;
-    format!("{}{}", SYMBOLS.bar_full.repeat(filled), SYMBOLS.bar_empty.repeat(empty))
+/// Single-character bar for per-core compact display.
+/// Maps 0-100% to block elements for maximum density.
+fn core_bar_char(pct: f64) -> &'static str {
+    if !common::unicode_enabled() {
+        if pct >= 75.0 {
+            "#"
+        } else if pct >= 50.0 {
+            "="
+        } else if pct >= 25.0 {
+            "-"
+        } else {
+            "."
+        }
+    } else if pct >= 87.5 {
+        "\u{2588}" // █
+    } else if pct >= 75.0 {
+        "\u{2587}" // ▇
+    } else if pct >= 62.5 {
+        "\u{2586}" // ▆
+    } else if pct >= 50.0 {
+        "\u{2585}" // ▅
+    } else if pct >= 37.5 {
+        "\u{2584}" // ▄
+    } else if pct >= 25.0 {
+        "\u{2583}" // ▃
+    } else if pct >= 12.5 {
+        "\u{2582}" // ▂
+    } else {
+        "\u{2581}" // ▁
+    }
 }
 
 pub fn format_bytes(bytes: u64) -> String {

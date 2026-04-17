@@ -1,26 +1,32 @@
 use std::sync::{Arc, RwLock, mpsc};
 use std::time::{Duration, Instant};
 
-use ec_test_lib::{Source, Threshold};
+use ec_test_lib::Threshold;
 use time_alarm_service_messages::AcpiTimerId;
 use tracing::{debug, info, trace, warn};
 
 use crate::battery::{poll_bix, poll_bst};
-use crate::state::{AppState, BatteryCommand, FanRpmBounds, FanStateLevels, ThermalCommand};
+use crate::source::DynSource;
+use crate::state::{
+    BatteryCommand, BatteryState, FanRpmBounds, FanStateLevels, RtcState, SystemState, ThermalCommand, ThermalState,
+};
 
 // ── Battery ───────────────────────────────────────────────────────────────────
 
 /// Polls BST/BIX and records a graph sample on every tick.
-/// Intended to run every 30 s.
-pub struct BatteryUpdater<S: Source> {
-    source: Arc<S>,
-    state: Arc<RwLock<AppState>>,
+pub struct BatteryUpdater {
+    source: Arc<dyn DynSource>,
+    state: Arc<RwLock<BatteryState>>,
     battery_rx: mpsc::Receiver<BatteryCommand>,
     bix_cached: bool,
 }
 
-impl<S: Source + Send + Sync + 'static> BatteryUpdater<S> {
-    pub fn new(source: Arc<S>, state: Arc<RwLock<AppState>>, battery_rx: mpsc::Receiver<BatteryCommand>) -> Self {
+impl BatteryUpdater {
+    pub fn new(
+        source: Arc<dyn DynSource>,
+        state: Arc<RwLock<BatteryState>>,
+        battery_rx: mpsc::Receiver<BatteryCommand>,
+    ) -> Self {
         Self {
             source,
             state,
@@ -40,8 +46,8 @@ impl<S: Source + Send + Sync + 'static> BatteryUpdater<S> {
                 warn!(btp = v, "failed to set battery trip-point on hardware");
             }
             if let Ok(mut s) = self.state.write() {
-                s.battery.btp = v;
-                s.battery.btp_success = success;
+                s.btp = v;
+                s.btp_success = success;
             }
         }
     }
@@ -53,24 +59,24 @@ impl<S: Source + Send + Sync + 'static> BatteryUpdater<S> {
         let mut s = self.state.write().expect("state RwLock poisoned");
 
         if !self.bix_cached {
-            poll_bix(&mut s.battery, self.source.as_ref());
-            if s.battery.bix_success {
+            poll_bix(&mut s, self.source.as_ref());
+            if s.bix_success {
                 info!("BIX static battery info cached successfully");
             }
-            self.bix_cached = s.battery.bix_success;
+            self.bix_cached = s.bix_success;
         }
 
-        poll_bst(&mut s.battery, self.source.as_ref());
+        poll_bst(&mut s, self.source.as_ref());
 
-        if s.battery.bst_success {
-            let cap = s.battery.bst.battery_remaining_capacity;
+        if s.bst_success {
+            let cap = s.bst.battery_remaining_capacity;
             trace!(
                 remaining_capacity = cap,
-                voltage_mv = s.battery.bst.battery_present_voltage,
+                voltage_mv = s.bst.battery_present_voltage,
                 "battery graph sample recorded"
             );
-            s.battery.samples.insert(cap);
-            s.battery.t_min += 1;
+            s.samples.insert(cap);
+            s.t_min += 1;
         }
     }
 
@@ -89,15 +95,18 @@ impl<S: Source + Send + Sync + 'static> BatteryUpdater<S> {
 // ── Thermal ───────────────────────────────────────────────────────────────────
 
 /// Polls temperature and fan metrics on every tick.
-/// Intended to run every 5 s.
-pub struct ThermalUpdater<S: Source> {
-    source: Arc<S>,
-    state: Arc<RwLock<AppState>>,
+pub struct ThermalUpdater {
+    source: Arc<dyn DynSource>,
+    state: Arc<RwLock<ThermalState>>,
     thermal_rx: mpsc::Receiver<ThermalCommand>,
 }
 
-impl<S: Source + Send + Sync + 'static> ThermalUpdater<S> {
-    pub fn new(source: Arc<S>, state: Arc<RwLock<AppState>>, thermal_rx: mpsc::Receiver<ThermalCommand>) -> Self {
+impl ThermalUpdater {
+    pub fn new(
+        source: Arc<dyn DynSource>,
+        state: Arc<RwLock<ThermalState>>,
+        thermal_rx: mpsc::Receiver<ThermalCommand>,
+    ) -> Self {
         Self {
             source,
             state,
@@ -116,8 +125,8 @@ impl<S: Source + Send + Sync + 'static> ThermalUpdater<S> {
                 warn!(rpm, "failed to set fan RPM on hardware");
             }
             if let Ok(mut s) = self.state.write() {
-                s.thermal.rpm_limit = rpm;
-                s.thermal.rpm_set_success = success;
+                s.rpm_limit = rpm;
+                s.rpm_set_success = success;
             }
         }
     }
@@ -140,56 +149,56 @@ impl<S: Source + Send + Sync + 'static> ThermalUpdater<S> {
         match temp {
             Ok(t) => {
                 trace!(skin_temp = t, "temperature read OK");
-                s.thermal.sensor.skin_temp = t;
-                s.thermal.sensor.samples.insert(t);
-                s.thermal.sensor.temp_success = true;
+                s.sensor.skin_temp = t;
+                s.sensor.samples.insert(t);
+                s.sensor.temp_success = true;
             }
             Err(e) => {
                 warn!(error = %e, "failed to read skin temperature");
-                s.thermal.sensor.temp_success = false;
+                s.sensor.temp_success = false;
             }
         }
-        s.thermal.sensor.thresholds = crate::thermal::sensor_thresholds();
-        s.thermal.sensor.thresholds_success = true;
+        s.sensor.thresholds = crate::thermal::sensor_thresholds();
+        s.sensor.thresholds_success = true;
 
         match rpm {
             Ok(r) => {
                 trace!(rpm = r, "fan RPM read OK");
-                s.thermal.fan.rpm = r;
-                s.thermal.fan.samples.insert(r as u32);
-                s.thermal.fan.rpm_success = true;
+                s.fan.rpm = r;
+                s.fan.samples.insert(r as u32);
+                s.fan.rpm_success = true;
             }
             Err(e) => {
                 warn!(error = %e, "failed to read fan RPM");
-                s.thermal.fan.rpm_success = false;
+                s.fan.rpm_success = false;
             }
         }
         match (min_rpm, max_rpm) {
             (Ok(min), Ok(max)) => {
-                s.thermal.fan.rpm_bounds = FanRpmBounds { min, max };
-                s.thermal.fan.bounds_success = true;
+                s.fan.rpm_bounds = FanRpmBounds { min, max };
+                s.fan.bounds_success = true;
             }
             (Err(e), _) | (_, Err(e)) => {
                 warn!(error = %e, "failed to read fan RPM bounds");
-                s.thermal.fan.bounds_success = false;
+                s.fan.bounds_success = false;
             }
         }
         match (thresh_on, thresh_ramp, thresh_max) {
             (Ok(on), Ok(ramping), Ok(max)) => {
-                s.thermal.fan.state_levels = FanStateLevels { on, ramping, max };
-                s.thermal.fan.levels_success = true;
+                s.fan.state_levels = FanStateLevels { on, ramping, max };
+                s.fan.levels_success = true;
             }
             (Err(e), ..) => {
                 warn!(error = %e, "failed to read fan state levels");
-                s.thermal.fan.levels_success = false;
+                s.fan.levels_success = false;
             }
             (_, Err(e), _) | (_, _, Err(e)) => {
                 warn!(error = %e, "failed to read fan state levels");
-                s.thermal.fan.levels_success = false;
+                s.fan.levels_success = false;
             }
         }
 
-        s.thermal.t += 1;
+        s.t += 1;
     }
 
     pub async fn run(mut self, interval: Duration) {
@@ -205,15 +214,14 @@ impl<S: Source + Send + Sync + 'static> ThermalUpdater<S> {
 // ── RTC ───────────────────────────────────────────────────────────────────────
 
 /// Polls RTC time, capabilities, and timer state on every tick.
-/// Intended to run every 1 s.
-pub struct RtcUpdater<S: Source> {
-    source: Arc<S>,
-    state: Arc<RwLock<AppState>>,
+pub struct RtcUpdater {
+    source: Arc<dyn DynSource>,
+    state: Arc<RwLock<RtcState>>,
     rtc_caps_cached: bool,
 }
 
-impl<S: Source + Send + Sync + 'static> RtcUpdater<S> {
-    pub fn new(source: Arc<S>, state: Arc<RwLock<AppState>>) -> Self {
+impl RtcUpdater {
+    pub fn new(source: Arc<dyn DynSource>, state: Arc<RwLock<RtcState>>) -> Self {
         Self {
             source,
             state,
@@ -245,7 +253,7 @@ impl<S: Source + Send + Sync + 'static> RtcUpdater<S> {
             } else if let Err(ref e) = c {
                 warn!(error = %e, "failed to read RTC capabilities");
             }
-            s.rtc.capabilities = Some(c.map_err(Into::into));
+            s.capabilities = Some(c);
             if ok {
                 self.rtc_caps_cached = true;
             }
@@ -255,7 +263,7 @@ impl<S: Source + Send + Sync + 'static> RtcUpdater<S> {
             Ok(_) => trace!("RTC timestamp read OK"),
             Err(e) => warn!(error = %e, "failed to read RTC timestamp"),
         }
-        s.rtc.timestamp = Some(timestamp.map_err(Into::into));
+        s.timestamp = Some(timestamp);
 
         if let Err(ref e) = ac_value {
             warn!(error = %e, "failed to read AC power timer value");
@@ -264,12 +272,12 @@ impl<S: Source + Send + Sync + 'static> RtcUpdater<S> {
             warn!(error = %e, "failed to read DC power timer value");
         }
 
-        s.rtc.timers[0].value = Some(ac_value.map_err(Into::into));
-        s.rtc.timers[0].wake_policy = Some(ac_policy.map_err(Into::into));
-        s.rtc.timers[0].timer_status = Some(ac_status.map_err(Into::into));
-        s.rtc.timers[1].value = Some(dc_value.map_err(Into::into));
-        s.rtc.timers[1].wake_policy = Some(dc_policy.map_err(Into::into));
-        s.rtc.timers[1].timer_status = Some(dc_status.map_err(Into::into));
+        s.timers[0].value = Some(ac_value);
+        s.timers[0].wake_policy = Some(ac_policy);
+        s.timers[0].timer_status = Some(ac_status);
+        s.timers[1].value = Some(dc_value);
+        s.timers[1].wake_policy = Some(dc_policy);
+        s.timers[1].timer_status = Some(dc_status);
     }
 
     pub async fn run(mut self, interval: Duration) {
@@ -287,14 +295,14 @@ impl<S: Source + Send + Sync + 'static> RtcUpdater<S> {
 /// Polls OS-level CPU, memory, and network metrics on every tick.
 /// Intended to run every 500 ms.
 pub struct SystemUpdater {
-    state: Arc<RwLock<AppState>>,
+    state: Arc<RwLock<SystemState>>,
     sys_info: sysinfo::System,
     sys_nets: sysinfo::Networks,
     last_update: Option<Instant>,
 }
 
 impl SystemUpdater {
-    pub fn new(state: Arc<RwLock<AppState>>) -> Self {
+    pub fn new(state: Arc<RwLock<SystemState>>) -> Self {
         info!("initialising sysinfo");
         Self {
             state,
@@ -322,26 +330,26 @@ impl SystemUpdater {
 
         // ── CPU ───────────────────────────────────────────────────────────────
         let usage = self.sys_info.global_cpu_usage() as f64;
-        s.system.cpu.usage = usage;
-        s.system.cpu.per_core = self.sys_info.cpus().iter().map(|c| c.cpu_usage()).collect();
-        s.system.cpu.samples.insert(usage);
-        s.system.cpu.success = true;
+        s.cpu.usage = usage;
+        s.cpu.per_core = self.sys_info.cpus().iter().map(|c| c.cpu_usage()).collect();
+        s.cpu.samples.insert(usage);
+        s.cpu.success = true;
         trace!(usage, "CPU usage sampled");
 
         // ── Memory ────────────────────────────────────────────────────────────
         let total = self.sys_info.total_memory();
         let used = self.sys_info.used_memory();
-        s.system.memory.total_bytes = total;
-        s.system.memory.used_bytes = used;
-        s.system.memory.swap_total_bytes = self.sys_info.total_swap();
-        s.system.memory.swap_used_bytes = self.sys_info.used_swap();
+        s.memory.total_bytes = total;
+        s.memory.used_bytes = used;
+        s.memory.swap_total_bytes = self.sys_info.total_swap();
+        s.memory.swap_used_bytes = self.sys_info.used_swap();
         let mem_pct = if total > 0 {
             used as f64 / total as f64 * 100.0
         } else {
             0.0
         };
-        s.system.memory.samples.insert(mem_pct);
-        s.system.memory.success = true;
+        s.memory.samples.insert(mem_pct);
+        s.memory.success = true;
         trace!(used, total, "memory sampled");
 
         // ── Network ───────────────────────────────────────────────────────────
@@ -356,16 +364,16 @@ impl SystemUpdater {
             });
         let rx_bps = delta_rx as f64 / elapsed_secs;
         let tx_bps = delta_tx as f64 / elapsed_secs;
-        s.system.network.rx_bps = rx_bps;
-        s.system.network.tx_bps = tx_bps;
-        s.system.network.total_rx = total_rx;
-        s.system.network.total_tx = total_tx;
-        s.system.network.rx_samples.insert(rx_bps);
-        s.system.network.tx_samples.insert(tx_bps);
-        s.system.network.success = true;
+        s.network.rx_bps = rx_bps;
+        s.network.tx_bps = tx_bps;
+        s.network.total_rx = total_rx;
+        s.network.total_tx = total_tx;
+        s.network.rx_samples.insert(rx_bps);
+        s.network.tx_samples.insert(tx_bps);
+        s.network.success = true;
         trace!(rx_bps, tx_bps, "network sampled");
 
-        s.system.t += 1;
+        s.t += 1;
     }
 
     pub async fn run(mut self, interval: Duration) {

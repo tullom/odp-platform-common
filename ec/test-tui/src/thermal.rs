@@ -1,25 +1,23 @@
 use crate::common;
 use crate::common::SYMBOLS;
-use crate::state::{AppState, FanStateLevels, SensorThresholds, ThermalCommand};
+use crate::state::{FanStateLevels, SensorThresholds, ThermalCommand, ThermalState};
 use tracing::{debug, warn};
 
 #[cfg(test)]
+use crate::source::DynSource;
+#[cfg(test)]
 use crate::state::{FanData, FanRpmBounds, SensorData};
 
-#[cfg(test)]
-use ec_test_lib::ThermalSource;
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{Event, KeyCode, KeyEventKind},
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize, palette::tailwind},
     text::{Line, Span},
     widgets::{Block, Paragraph, Widget},
 };
 use std::sync::mpsc;
 use tui_input::{Input, backend::crossterm::EventHandler};
-
-const LABEL_COLOR: Color = tailwind::ORANGE.c300;
 
 // ── Threshold configuration ───────────────────────────────────────────────────
 
@@ -38,7 +36,7 @@ pub(crate) fn sensor_thresholds() -> SensorThresholds {
 
 #[cfg(test)]
 impl SensorData {
-    pub fn update<S: ThermalSource>(&mut self, source: &S) {
+    pub(crate) fn update(&mut self, source: &dyn DynSource) {
         if let Ok(temp) = source.get_temperature() {
             self.skin_temp = temp;
             self.samples.insert(temp);
@@ -53,7 +51,7 @@ impl SensorData {
 
 #[cfg(test)]
 impl FanData {
-    pub fn update<S: ThermalSource>(&mut self, source: &S) {
+    pub(crate) fn update(&mut self, source: &dyn DynSource) {
         if let Ok(rpm) = source.get_rpm() {
             self.rpm = rpm;
             self.samples.insert(rpm as u32);
@@ -109,12 +107,12 @@ fn thermal_zone(temp: f64, thresholds: &SensorThresholds) -> &'static str {
     }
 }
 
-fn fan_zone(rpm: f64, levels: &FanStateLevels) -> &'static str {
-    if rpm >= levels.max {
+fn fan_zone(temp: f64, levels: &FanStateLevels) -> &'static str {
+    if temp >= levels.max {
         "Max"
-    } else if rpm >= levels.ramping {
+    } else if temp >= levels.ramping {
         "Ramping"
-    } else if rpm >= levels.on {
+    } else if temp >= levels.on {
         "On"
     } else {
         "Off"
@@ -190,20 +188,22 @@ impl Thermal {
         }
     }
 
-    pub(crate) fn render(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        let [sensor_area, fan_area] = common::area_split(area, Direction::Horizontal, 50, 50);
-        self.render_sensor(state, sensor_area, buf);
-        self.render_fan(state, fan_area, buf);
+    pub(crate) fn render(&self, state: &ThermalState, area: Rect, buf: &mut Buffer) {
+        // Stacked layout: sensor block on top, fan block on bottom, sparklines fill remaining
+        let [sensor_area, fan_area] = Layout::vertical([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(area);
+
+        self.render_sensor_compact(state, sensor_area, buf);
+        self.render_fan_compact(state, fan_area, buf);
 
         if self.popup_open {
             common::render_input_popup(area, buf, " Set Fan RPM ", self.popup_input.value());
         }
     }
 
-    pub(crate) fn render_card(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    pub(crate) fn render_card(&self, state: &ThermalState, area: Rect, buf: &mut Buffer) {
         use ratatui::layout::Constraint::{Length, Min};
 
-        let th = &state.thermal;
+        let th = state;
         let block = Block::bordered()
             .title(common::status_title(
                 "Thermal",
@@ -252,7 +252,7 @@ impl Thermal {
         Line::from(vec![
             Span::styled(
                 format!("Fan   {:.1} RPM", th.fan.rpm),
-                Style::default().fg(LABEL_COLOR).bold(),
+                Style::default().fg(common::palette::LABEL).bold(),
             ),
             Span::raw("  "),
             Span::styled(fan_zone_str, Style::default().fg(fan_color)),
@@ -304,56 +304,36 @@ impl Thermal {
     }
 }
 
-// ── Render helpers ────────────────────────────────────────────────────────────
+// ── Compact render helpers ────────────────────────────────────────────────────
 
 impl Thermal {
-    fn render_sensor(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        let [chart_area, stats_area] = common::area_split(area, Direction::Vertical, 65, 35);
-        self.render_sensor_chart(state, chart_area, buf);
-        self.render_sensor_stats(state, stats_area, buf);
-    }
+    fn render_sensor_compact(&self, state: &ThermalState, area: Rect, buf: &mut Buffer) {
+        use Constraint::{Length, Min};
+        let s = &state.sensor;
 
-    fn render_sensor_chart(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        let s = &state.thermal.sensor;
-        let y_labels = [
-            "0.0".bold(),
-            Span::styled(
-                format!("{:.1}", (s.thresholds.critical + 5.0) / 2.0),
-                Style::default().bold(),
-            ),
-            Span::styled(format!("{:.1}", s.thresholds.critical + 5.0), Style::default().bold()),
-        ];
-        let graph = common::Graph {
-            title: "Temperature vs Time".to_string(),
-            color: tailwind::ORANGE.c400,
-            samples: s.samples.get(),
-            x_axis: "Time (s)".to_string(),
-            x_bounds: [0.0, 60.0],
-            x_labels: common::time_labels(crate::state::THERMAL_MAX_SAMPLES),
-            y_axis: format!("{}C", SYMBOLS.degree),
-            y_bounds: [0.0, s.thresholds.critical + 5.0],
-            y_labels,
-        };
-        common::render_chart(area, buf, graph);
-    }
-
-    fn render_sensor_stats(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        let s = &state.thermal.sensor;
-        let block = common::title_block(common::status_title("Live Temperature", s.temp_success), 0, LABEL_COLOR);
+        let block = Block::bordered()
+            .title(common::status_title("Temperature", s.temp_success))
+            .border_style(common::palette::TEMP);
         let inner = block.inner(area);
         block.render(area, buf);
 
-        use Constraint::{Length, Min};
-        let [temp_line, gauge_area, thresholds_area] = Layout::vertical([Length(1), Length(1), Min(0)]).areas(inner);
+        let [temp_line, gauge_area, thresh_area, spark_area] =
+            Layout::vertical([Length(1), Length(1), Length(3), Min(0)]).areas(inner);
 
+        // Current temp + zone
         let color = temp_level_color(s.skin_temp, &s.thresholds);
-        Paragraph::new(common::metric_row(
-            "Skin ",
-            format!("{:.2} {}C", s.skin_temp, SYMBOLS.degree),
-            color,
-        ))
+        let zone = thermal_zone(s.skin_temp, &s.thresholds);
+        Line::from(vec![
+            Span::styled(
+                format!("Skin  {:.1} {}C", s.skin_temp, SYMBOLS.degree),
+                Style::default().fg(color).bold(),
+            ),
+            Span::raw("  "),
+            Span::styled(zone, Style::default().fg(color)),
+        ])
         .render(temp_line, buf);
 
+        // Threshold gauge
         let max = s.thresholds.critical + 5.0;
         let ratio = (s.skin_temp / max).clamp(0.0, 1.0);
         let thresholds = [
@@ -370,196 +350,234 @@ impl Thermal {
         }
         .render(gauge_area, buf);
 
+        // Inline thresholds
         Paragraph::new(vec![
             common::metric_row(
                 "Warn    ",
                 format!("{:.0} {}C", s.thresholds.warn_high, SYMBOLS.degree),
-                LABEL_COLOR,
+                common::palette::LABEL,
             ),
             common::metric_row(
                 "Prochot ",
                 format!("{:.0} {}C", s.thresholds.prochot, SYMBOLS.degree),
-                LABEL_COLOR,
+                common::palette::LABEL,
             ),
             common::metric_row(
                 "Critical",
                 format!("{:.0} {}C", s.thresholds.critical, SYMBOLS.degree),
-                LABEL_COLOR,
+                common::palette::LABEL,
             ),
         ])
-        .render(thresholds_area, buf);
+        .render(thresh_area, buf);
+
+        // Sparkline
+        let samples = s.samples.get();
+        common::render_sparkline(spark_area, buf, &samples, common::palette::TEMP, [0.0, max]);
     }
 
-    fn render_fan(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        let [chart_area, widget_area] = common::area_split(area, Direction::Vertical, 65, 35);
-        let [stats_area, levels_area] = common::area_split(widget_area, Direction::Horizontal, 50, 50);
-        self.render_fan_chart(state, chart_area, buf);
-        self.render_fan_stats(state, stats_area, buf);
-        self.render_fan_levels(state, levels_area, buf);
-    }
+    fn render_fan_compact(&self, state: &ThermalState, area: Rect, buf: &mut Buffer) {
+        use Constraint::{Length, Min};
+        let s = &state.sensor;
+        let f = &state.fan;
 
-    fn render_fan_chart(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        let f = &state.thermal.fan;
-        let y_labels = [
-            "0.0".bold(),
-            Span::styled((f.rpm_bounds.max / 2.0).to_string(), Style::default().bold()),
-            Span::styled(f.rpm_bounds.max.to_string(), Style::default().bold()),
-        ];
-        let graph = common::Graph {
-            title: "Fan RPM vs Time".to_string(),
-            color: tailwind::SKY.c400,
-            samples: f.samples.get(),
-            x_axis: "Time (s)".to_string(),
-            x_bounds: [0.0, 60.0],
-            x_labels: common::time_labels(crate::state::THERMAL_MAX_SAMPLES),
-            y_axis: "RPM".to_string(),
-            y_bounds: [0.0, f.rpm_bounds.max],
-            y_labels,
-        };
-        common::render_chart(area, buf, graph);
-    }
-
-    fn render_fan_stats(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        let f = &state.thermal.fan;
-        let block = common::title_block(
-            common::status_title("Live Fan RPM", f.rpm_success && f.bounds_success),
-            0,
-            LABEL_COLOR,
-        );
+        let block = Block::bordered()
+            .title(common::status_title("Fan", f.rpm_success && f.bounds_success))
+            .border_style(common::palette::FAN);
         let inner = block.inner(area);
         block.render(area, buf);
 
-        use Constraint::{Length, Min};
-        let [rpm_line, gauge_area, limit_line, _rest] =
-            Layout::vertical([Length(1), Length(1), Length(1), Min(0)]).areas(inner);
+        let [rpm_line, gauge_area, info_area, spark_area] =
+            Layout::vertical([Length(1), Length(1), Length(4), Min(0)]).areas(inner);
 
-        Paragraph::new(common::metric_row(
-            "RPM  ",
-            format!(
-                "{:.0}  ({} {} {})",
-                f.rpm, f.rpm_bounds.min, SYMBOLS.en_dash, f.rpm_bounds.max
+        // Current RPM + zone
+        let zone_str = fan_zone(s.skin_temp, &f.state_levels);
+        let zone_color = fan_zone_color(f.rpm, &f.state_levels);
+        Line::from(vec![
+            Span::styled(
+                format!("Fan   {:.0} RPM", f.rpm),
+                Style::default().fg(common::palette::LABEL).bold(),
             ),
-            LABEL_COLOR,
-        ))
+            Span::raw("  "),
+            Span::styled(zone_str, Style::default().fg(zone_color)),
+        ])
         .render(rpm_line, buf);
 
-        let max = f.rpm_bounds.max.max(1.0);
-        let ratio = (f.rpm / max).clamp(0.0, 1.0);
+        // RPM gauge
+        let max_rpm = f.rpm_bounds.max.max(1.0);
+        let rpm_ratio = (f.rpm / max_rpm).clamp(0.0, 1.0);
         let thresholds = [
-            (0.0, tailwind::GREEN.c500),
-            (f.state_levels.on / max, tailwind::SKY.c400),
-            (f.state_levels.ramping / max, tailwind::AMBER.c400),
-            (f.state_levels.max / max, tailwind::ORANGE.c400),
+            (0.0, tailwind::SLATE.c500),
+            (f.state_levels.on / max_rpm, tailwind::GREEN.c500),
+            (f.state_levels.ramping / max_rpm, tailwind::SKY.c400),
+            (f.state_levels.max / max_rpm, tailwind::AMBER.c400),
         ];
         common::ThresholdGauge {
-            ratio,
+            ratio: rpm_ratio,
             label: Some(Span::raw(format!("{:.0} RPM", f.rpm))),
             thresholds: &thresholds,
             track_color: tailwind::SLATE.c800,
         }
         .render(gauge_area, buf);
 
-        let (limit_str, limit_color) = if state.thermal.rpm_limit > 0.0 {
-            let color = if state.thermal.rpm_set_success {
+        // Inline info: bounds + state levels + limit
+        let (limit_str, limit_color) = if state.rpm_limit > 0.0 {
+            let color = if state.rpm_set_success {
                 tailwind::GREEN.c400
             } else {
                 tailwind::RED.c500
             };
-            (format!("{:.0} RPM", state.thermal.rpm_limit), color)
+            (format!("{:.0} RPM", state.rpm_limit), color)
         } else {
-            ("—  (press s to set)".to_string(), tailwind::SLATE.c500)
+            ("-- (press s to set)".to_string(), tailwind::SLATE.c500)
         };
-        common::metric_row("Limit", limit_str, limit_color).render(limit_line, buf);
-    }
-
-    fn render_fan_levels(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        let f = &state.thermal.fan;
-        let block = common::title_block(
-            common::status_title("Fan State Levels", f.levels_success),
-            1,
-            LABEL_COLOR,
-        );
         Paragraph::new(vec![
+            common::metric_row(
+                "Range   ",
+                format!(
+                    "{:.0} {} {:.0} RPM",
+                    f.rpm_bounds.min, SYMBOLS.en_dash, f.rpm_bounds.max
+                ),
+                common::palette::LABEL,
+            ),
             common::metric_row(
                 "On      ",
                 format!("{:.0} {}C", f.state_levels.on, SYMBOLS.degree),
-                LABEL_COLOR,
+                common::palette::LABEL,
             ),
             common::metric_row(
                 "Ramping ",
                 format!("{:.0} {}C", f.state_levels.ramping, SYMBOLS.degree),
-                LABEL_COLOR,
+                common::palette::LABEL,
             ),
-            common::metric_row(
-                "Max     ",
-                format!("{:.0} {}C", f.state_levels.max, SYMBOLS.degree),
-                LABEL_COLOR,
-            ),
+            common::metric_row("Override", limit_str, limit_color),
         ])
-        .block(block)
-        .render(area, buf);
+        .render(info_area, buf);
+
+        // Sparkline
+        let samples = f.samples.get();
+        common::render_sparkline(spark_area, buf, &samples, common::palette::FAN, [0.0, max_rpm]);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::test_support::TestError;
-    use ec_test_lib::{ErrorType, Threshold};
+    use color_eyre::eyre::eyre;
+    use ec_test_lib::Threshold;
 
     // ── test doubles ─────────────────────────────────────────────────────────
 
     struct OkThermal;
-    impl ErrorType for OkThermal {
-        type Error = TestError;
-    }
-    impl ThermalSource for OkThermal {
-        fn get_temperature(&self) -> Result<f64, Self::Error> {
+    impl DynSource for OkThermal {
+        fn get_temperature(&self) -> color_eyre::Result<f64> {
             Ok(25.5)
         }
-        fn get_rpm(&self) -> Result<f64, Self::Error> {
+        fn get_rpm(&self) -> color_eyre::Result<f64> {
             Ok(3000.0)
         }
-        fn get_min_rpm(&self) -> Result<f64, Self::Error> {
+        fn get_min_rpm(&self) -> color_eyre::Result<f64> {
             Ok(0.0)
         }
-        fn get_max_rpm(&self) -> Result<f64, Self::Error> {
+        fn get_max_rpm(&self) -> color_eyre::Result<f64> {
             Ok(6000.0)
         }
-        fn get_threshold(&self, threshold: Threshold) -> Result<f64, Self::Error> {
+        fn get_threshold(&self, threshold: Threshold) -> color_eyre::Result<f64> {
             match threshold {
                 Threshold::On => Ok(28.0),
                 Threshold::Ramping => Ok(40.0),
                 Threshold::Max => Ok(44.0),
             }
         }
-        fn set_rpm(&self, _: f64) -> Result<(), Self::Error> {
+        fn set_rpm(&self, _: f64) -> color_eyre::Result<()> {
             Ok(())
+        }
+        fn get_bst(&self) -> color_eyre::Result<battery_service_messages::BstReturn> {
+            Err(eyre!("unused"))
+        }
+        fn get_bix(&self) -> color_eyre::Result<battery_service_messages::BixFixedStrings> {
+            Err(eyre!("unused"))
+        }
+        fn set_btp(&self, _: u32) -> color_eyre::Result<()> {
+            Err(eyre!("unused"))
+        }
+        fn get_capabilities(&self) -> color_eyre::Result<time_alarm_service_messages::TimeAlarmDeviceCapabilities> {
+            Err(eyre!("unused"))
+        }
+        fn get_real_time(&self) -> color_eyre::Result<time_alarm_service_messages::AcpiTimestamp> {
+            Err(eyre!("unused"))
+        }
+        fn get_wake_status(
+            &self,
+            _: time_alarm_service_messages::AcpiTimerId,
+        ) -> color_eyre::Result<time_alarm_service_messages::TimerStatus> {
+            Err(eyre!("unused"))
+        }
+        fn get_expired_timer_wake_policy(
+            &self,
+            _: time_alarm_service_messages::AcpiTimerId,
+        ) -> color_eyre::Result<time_alarm_service_messages::AlarmExpiredWakePolicy> {
+            Err(eyre!("unused"))
+        }
+        fn get_timer_value(
+            &self,
+            _: time_alarm_service_messages::AcpiTimerId,
+        ) -> color_eyre::Result<time_alarm_service_messages::AlarmTimerSeconds> {
+            Err(eyre!("unused"))
         }
     }
 
     struct ErrThermal;
-    impl ErrorType for ErrThermal {
-        type Error = TestError;
-    }
-    impl ThermalSource for ErrThermal {
-        fn get_temperature(&self) -> Result<f64, Self::Error> {
-            Err(TestError)
+    impl DynSource for ErrThermal {
+        fn get_temperature(&self) -> color_eyre::Result<f64> {
+            Err(eyre!("test error"))
         }
-        fn get_rpm(&self) -> Result<f64, Self::Error> {
-            Err(TestError)
+        fn get_rpm(&self) -> color_eyre::Result<f64> {
+            Err(eyre!("test error"))
         }
-        fn get_min_rpm(&self) -> Result<f64, Self::Error> {
-            Err(TestError)
+        fn get_min_rpm(&self) -> color_eyre::Result<f64> {
+            Err(eyre!("test error"))
         }
-        fn get_max_rpm(&self) -> Result<f64, Self::Error> {
-            Err(TestError)
+        fn get_max_rpm(&self) -> color_eyre::Result<f64> {
+            Err(eyre!("test error"))
         }
-        fn get_threshold(&self, _: Threshold) -> Result<f64, Self::Error> {
-            Err(TestError)
+        fn get_threshold(&self, _: Threshold) -> color_eyre::Result<f64> {
+            Err(eyre!("test error"))
         }
-        fn set_rpm(&self, _: f64) -> Result<(), Self::Error> {
-            Err(TestError)
+        fn set_rpm(&self, _: f64) -> color_eyre::Result<()> {
+            Err(eyre!("test error"))
+        }
+        fn get_bst(&self) -> color_eyre::Result<battery_service_messages::BstReturn> {
+            Err(eyre!("unused"))
+        }
+        fn get_bix(&self) -> color_eyre::Result<battery_service_messages::BixFixedStrings> {
+            Err(eyre!("unused"))
+        }
+        fn set_btp(&self, _: u32) -> color_eyre::Result<()> {
+            Err(eyre!("unused"))
+        }
+        fn get_capabilities(&self) -> color_eyre::Result<time_alarm_service_messages::TimeAlarmDeviceCapabilities> {
+            Err(eyre!("unused"))
+        }
+        fn get_real_time(&self) -> color_eyre::Result<time_alarm_service_messages::AcpiTimestamp> {
+            Err(eyre!("unused"))
+        }
+        fn get_wake_status(
+            &self,
+            _: time_alarm_service_messages::AcpiTimerId,
+        ) -> color_eyre::Result<time_alarm_service_messages::TimerStatus> {
+            Err(eyre!("unused"))
+        }
+        fn get_expired_timer_wake_policy(
+            &self,
+            _: time_alarm_service_messages::AcpiTimerId,
+        ) -> color_eyre::Result<time_alarm_service_messages::AlarmExpiredWakePolicy> {
+            Err(eyre!("unused"))
+        }
+        fn get_timer_value(
+            &self,
+            _: time_alarm_service_messages::AcpiTimerId,
+        ) -> color_eyre::Result<time_alarm_service_messages::AlarmTimerSeconds> {
+            Err(eyre!("unused"))
         }
     }
 

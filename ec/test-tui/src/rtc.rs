@@ -1,6 +1,6 @@
 use crate::common;
 use crate::common::SYMBOLS;
-use crate::state::{AppState, Fetched, TimerData};
+use crate::state::{Fetched, RtcState, TimerData};
 use embedded_mcu_hal::time::Datetime;
 use ratatui::{
     buffer::Buffer,
@@ -107,10 +107,10 @@ impl Rtc {
 impl Rtc {
     pub(crate) fn handle_event(&mut self, _evt: &Event) {}
 
-    pub(crate) fn render(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    pub(crate) fn render(&self, state: &RtcState, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min, Percentage};
 
-        let rtc = &state.rtc;
+        let rtc = state;
         let is_healthy = matches!(rtc.capabilities, Some(Ok(_))) && matches!(rtc.timestamp, Some(Ok(_)));
 
         let [time_area, bottom_area] = Layout::vertical([Length(5), Min(0)]).areas(area);
@@ -123,10 +123,10 @@ impl Rtc {
         rtc.timers[AcpiTimerId::DcPower as usize].render_panel("DC Power Timer", dc_area, buf);
     }
 
-    pub(crate) fn render_card(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
+    pub(crate) fn render_card(&self, state: &RtcState, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
 
-        let rtc = &state.rtc;
+        let rtc = state;
         let is_healthy = matches!(rtc.timestamp, Some(Ok(_)));
 
         let block = Block::bordered()
@@ -194,14 +194,14 @@ impl Rtc {
 // ── Render helpers ────────────────────────────────────────────────────────────
 
 impl Rtc {
-    fn render_time_display(&self, state: &AppState, area: Rect, buf: &mut Buffer, is_healthy: bool) {
+    fn render_time_display(&self, state: &RtcState, area: Rect, buf: &mut Buffer, is_healthy: bool) {
         let block = Block::bordered()
             .title(common::status_title("Real-Time Clock", is_healthy))
             .border_style(tailwind::VIOLET.c600);
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let lines: Vec<Line<'_>> = match &state.rtc.timestamp {
+        let lines: Vec<Line<'_>> = match &state.timestamp {
             None => vec![Line::raw("Pending...")],
             Some(Err(e)) => vec![Line::raw(format!("Error: {e}"))],
             Some(Ok(ts)) => vec![
@@ -229,13 +229,13 @@ impl Rtc {
         Paragraph::new(lines).render(inner, buf);
     }
 
-    fn render_capabilities(&self, state: &AppState, area: Rect, buf: &mut Buffer) {
-        let lines: Vec<Line<'_>> = match &state.rtc.capabilities {
+    fn render_capabilities(&self, state: &RtcState, area: Rect, buf: &mut Buffer) {
+        let lines: Vec<Line<'_>> = match &state.capabilities {
             None => vec![Line::raw("Pending...")],
             Some(Err(e)) => vec![Line::raw(format!("Error: {e}"))],
             Some(Ok(caps)) => format_capabilities(caps).into_iter().map(Line::raw).collect(),
         };
-        let is_ok = matches!(state.rtc.capabilities, Some(Ok(_)));
+        let is_ok = matches!(state.capabilities, Some(Ok(_)));
         Paragraph::new(lines)
             .block(
                 Block::bordered()
