@@ -1,4 +1,4 @@
-# PR review instructions
+# Rust PR Review Instructions
 CI overview:
 * CI will build the project and run `cargo test` and `cargo clippy`.
 * Feature combinations are checked with `cargo hack`.
