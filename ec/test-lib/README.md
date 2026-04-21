@@ -4,7 +4,8 @@ Rust library providing EC transport traits and implementations.
 
 ## Sources
 
-All sources are compiled unconditionally (except `acpi`, which is only available on Windows). The binary selects which source to use at runtime via the `--source` flag.
+All sources are compiled unconditionally (except `acpi`, which is only available on Windows).
+Binaries using this library select which source to use at runtime, typically via a `--source` flag.
 
 - **mock** — Mock EC data for development and testing without hardware
 - **acpi** — Windows ACPI transport (compiled only on Windows)
