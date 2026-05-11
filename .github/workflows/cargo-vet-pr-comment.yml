@@ -1,3 +1,8 @@
+# GitHub Actions: posts cargo-vet results back to the originating pull request.
+#
+# SPDX-License-Identifier: MIT
+#
+
 # This workflow triggers after cargo-vet workflow has run.
 # It adds a comment to the PR with the results of the cargo vet run.
 # It first adds a comment if the cargo vet run fails,
@@ -71,7 +76,7 @@ jobs:
             # Cargo Vet Audit Failed
 
             `cargo vet` has failed in this PR. Please run `cargo vet --locked` locally to check for new or updated unvetted dependencies.
-            Details about the vetting process can be found in [supply-chain/README.md](../blob/main/supply-chain/README.md)
+            Details about the vetting process can be found in [common/supply-chain/README.md](../blob/main/common/supply-chain/README.md)
                       
             ## If the unvetted dependencies are not needed
             Please modify Cargo.toml file to avoid including the dependencies.
