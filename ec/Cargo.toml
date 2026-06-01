@@ -4,7 +4,7 @@
 #
 
 [workspace]
-members = ["test-cli", "test-lib", "test-tui"]
+members = ["test-cli", "test-lib", "test-script", "test-tui"]
 resolver = "3"
 
 [workspace.package]

@@ -5,4 +5,5 @@
 
 pub mod battery;
 pub mod rtc;
+pub mod script;
 pub mod thermal;

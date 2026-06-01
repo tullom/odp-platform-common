@@ -1,0 +1,55 @@
+# Thermal service: real-hardware invariants.
+#
+# SPDX-License-Identifier: MIT
+
+# Temperature in a sane physical range.
+thermal.get_temperature => is_ok;
+thermal.get_temperature => ok_in_range -40.0..=125.0;
+
+# Fan RPM bounded by reported min/max.
+let fan_min = thermal.get_min_rpm;
+let fan_max = thermal.get_max_rpm;
+thermal.get_max_rpm => ok_gt fan_min;
+thermal.get_rpm     => ok_ge fan_min;
+thermal.get_rpm     => ok_le fan_max;
+
+# Thresholds strictly ordered, in physical range.
+let on_th      = thermal.get_threshold(on);
+let ramping_th = thermal.get_threshold(ramping);
+let max_th     = thermal.get_threshold(max);
+thermal.get_threshold(ramping) => gt on_th;
+thermal.get_threshold(max)     => gt ramping_th;
+thermal.get_threshold(on)      => ok_in_range -40.0..=125.0;
+thermal.get_threshold(max)     => ok_in_range -40.0..=125.0;
+
+# set_threshold round-trip + restore. Read-back tolerates the
+# Celsius<->deciKelvin rounding (~0.05 C).
+thermal.set_threshold(on, 35.0)    => is_ok;
+thermal.get_threshold(on)          => ok_in_range 34.9..35.1;
+thermal.set_threshold(on, on_th)   => is_ok;
+thermal.get_threshold(on)          => ok_eq on_th;
+
+thermal.set_threshold(ramping, 55.0)        => is_ok;
+thermal.get_threshold(ramping)              => ok_in_range 54.9..55.1;
+thermal.set_threshold(ramping, ramping_th)  => is_ok;
+thermal.get_threshold(ramping)              => ok_eq ramping_th;
+
+thermal.set_threshold(max, 90.0)     => is_ok;
+thermal.get_threshold(max)           => ok_in_range 89.9..90.1;
+thermal.set_threshold(max, max_th)   => is_ok;
+thermal.get_threshold(max)           => ok_eq max_th;
+
+# set_rpm round-trip + boundaries + restore.
+let original_rpm = thermal.get_rpm;
+thermal.set_rpm(2000) => is_ok;
+sleep 500ms;
+thermal.get_rpm       => ok_le fan_max;
+
+thermal.set_rpm(0)        => is_ok;
+sleep 200ms;
+thermal.get_rpm           => ok_ge fan_min;
+thermal.set_rpm(fan_max)  => is_ok;
+sleep 200ms;
+thermal.get_rpm           => ok_le fan_max;
+
+thermal.set_rpm(original_rpm) => is_ok;

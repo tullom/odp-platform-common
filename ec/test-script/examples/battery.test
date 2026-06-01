@@ -1,0 +1,25 @@
+# Battery service: real-hardware invariants.
+#
+# BIX capacity fields (design_capacity, last_full_charge_capacity,
+# design_cap_of_warning, design_cap_of_low) are stubbed on this
+# platform and intentionally not asserted.
+#
+# SPDX-License-Identifier: MIT
+
+battery.get_bix => is_ok;
+battery.get_bix.design_voltage  => in_range 1000..=30000;
+battery.get_bix.cycle_count     => ge 0;
+
+battery.get_bst => is_ok;
+battery.get_bst.battery_present_voltage => in_range 1000..=30000;
+battery.get_bst.battery_present_rate    => le 50000;
+
+battery.set_btp(0)     => is_ok;
+battery.set_btp(5000)  => is_ok;
+battery.set_btp(15000) => is_ok;
+
+# BST stays readable across a tick.
+let cap0 = battery.get_bst.battery_remaining_capacity;
+sleep 100ms;
+battery.get_bst => is_ok;
+battery.get_bst.battery_remaining_capacity => le cap0;
