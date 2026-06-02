@@ -160,12 +160,30 @@ struct BstState {
 }
 
 pub struct Mock {
-    rtc: MockRtc,
+    rtc: Mutex<MockRtc>,
     set_rpm: Mutex<Option<f64>>,
     current_temp_c: Mutex<f64>,
     temp_state: Mutex<TempState>,
     fan_state: Mutex<FanState>,
     bst_state: Mutex<BstState>,
+    thresholds: Mutex<MockThresholds>,
+}
+
+#[derive(Copy, Clone)]
+struct MockThresholds {
+    on: f64,
+    ramping: f64,
+    max: f64,
+}
+
+impl Default for MockThresholds {
+    fn default() -> Self {
+        Self {
+            on: 28.0,
+            ramping: 40.0,
+            max: 44.0,
+        }
+    }
 }
 
 impl Clone for Mock {
@@ -177,12 +195,13 @@ impl Clone for Mock {
 impl Mock {
     pub fn new() -> Self {
         Self {
-            rtc: MockRtc::default(),
+            rtc: Mutex::new(MockRtc::default()),
             set_rpm: Mutex::new(None),
             current_temp_c: Mutex::new(IDLE_TEMP),
             temp_state: Mutex::new(TempState::new()),
             fan_state: Mutex::new(Ramp::new(0.0)),
             bst_state: Mutex::new(BstState { state: 2, capacity: 0 }),
+            thresholds: Mutex::new(MockThresholds::default()),
         }
     }
 }
@@ -241,11 +260,22 @@ impl ThermalSource for Mock {
     }
 
     fn get_threshold(&self, threshold: Threshold) -> Result<f64, Self::Error> {
+        let t = *self.thresholds.lock().unwrap();
+        Ok(match threshold {
+            Threshold::On => t.on,
+            Threshold::Ramping => t.ramping,
+            Threshold::Max => t.max,
+        })
+    }
+
+    fn set_threshold(&self, threshold: Threshold, value: f64) -> Result<(), Self::Error> {
+        let mut t = self.thresholds.lock().unwrap();
         match threshold {
-            Threshold::On => Ok(28.0),
-            Threshold::Ramping => Ok(40.0),
-            Threshold::Max => Ok(44.0),
+            Threshold::On => t.on = value,
+            Threshold::Ramping => t.ramping = value,
+            Threshold::Max => t.max = value,
         }
+        Ok(())
     }
 
     fn set_rpm(&self, rpm: f64) -> Result<(), Self::Error> {
@@ -375,18 +405,42 @@ impl RtcSource for Mock {
     }
 
     fn get_real_time(&self) -> Result<AcpiTimestamp, Self::Error> {
-        Ok(self.rtc.time)
+        Ok(self.rtc.lock().unwrap().time)
     }
 
     fn get_wake_status(&self, timer_id: AcpiTimerId) -> Result<TimerStatus, Self::Error> {
-        Ok(self.rtc.get_timer(timer_id).timer_status)
+        Ok(self.rtc.lock().unwrap().get_timer(timer_id).timer_status)
     }
 
     fn get_expired_timer_wake_policy(&self, timer_id: AcpiTimerId) -> Result<AlarmExpiredWakePolicy, Self::Error> {
-        Ok(self.rtc.get_timer(timer_id).wake_policy)
+        Ok(self.rtc.lock().unwrap().get_timer(timer_id).wake_policy)
     }
 
     fn get_timer_value(&self, timer_id: AcpiTimerId) -> Result<AlarmTimerSeconds, Self::Error> {
-        Ok(self.rtc.get_timer(timer_id).value)
+        Ok(self.rtc.lock().unwrap().get_timer(timer_id).value)
+    }
+
+    fn set_real_time(&self, timestamp: AcpiTimestamp) -> Result<(), Self::Error> {
+        self.rtc.lock().unwrap().time = timestamp;
+        Ok(())
+    }
+
+    fn set_timer_value(&self, timer_id: AcpiTimerId, value: AlarmTimerSeconds) -> Result<(), Self::Error> {
+        self.rtc.lock().unwrap().timers[timer_id as usize].value = value;
+        Ok(())
+    }
+
+    fn set_expired_timer_wake_policy(
+        &self,
+        timer_id: AcpiTimerId,
+        policy: AlarmExpiredWakePolicy,
+    ) -> Result<(), Self::Error> {
+        self.rtc.lock().unwrap().timers[timer_id as usize].wake_policy = policy;
+        Ok(())
+    }
+
+    fn clear_wake_status(&self, timer_id: AcpiTimerId) -> Result<(), Self::Error> {
+        self.rtc.lock().unwrap().timers[timer_id as usize].timer_status = TimerStatus(0);
+        Ok(())
     }
 }

@@ -478,6 +478,7 @@ dependencies = [
  "clap",
  "critical-section",
  "ec-test-lib",
+ "ec-test-script",
  "time-alarm-service-messages",
 ]
 
@@ -496,6 +497,16 @@ dependencies = [
  "time-alarm-service-messages",
  "uuid",
  "windows 0.58.0",
+]
+
+[[package]]
+name = "ec-test-script"
+version = "0.1.0"
+dependencies = [
+ "battery-service-messages",
+ "critical-section",
+ "ec-test-lib",
+ "time-alarm-service-messages",
 ]
 
 [[package]]

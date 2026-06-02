@@ -78,6 +78,20 @@ pub enum Command {
     Battery(BatteryCommand),
     #[command(subcommand)]
     Rtc(RtcCommand),
+    #[command(subcommand)]
+    Script(ScriptCommand),
+}
+
+#[derive(Subcommand)]
+pub enum ScriptCommand {
+    /// Run a text-DSL integration-test script against the selected source.
+    ///
+    /// `path` may be a single `.test` file or a directory; directories are
+    /// walked recursively and every `*.test` file found is executed.
+    Run {
+        /// Path to a `.test` file or directory of `.test` files.
+        path: std::path::PathBuf,
+    },
 }
 
 #[derive(Subcommand)]

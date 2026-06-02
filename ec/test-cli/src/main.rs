@@ -16,6 +16,7 @@ fn dispatch<S: Source>(source: S, command: Command) -> Result<(), Box<dyn std::e
         Command::Thermal(cmd) => commands::thermal::run(source, cmd).map_err(Into::into),
         Command::Battery(cmd) => commands::battery::run(source, cmd).map_err(Into::into),
         Command::Rtc(cmd) => commands::rtc::run(source, cmd).map_err(Into::into),
+        Command::Script(cmd) => commands::script::run(source, cmd),
     }
 }
 

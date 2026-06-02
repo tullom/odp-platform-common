@@ -1,0 +1,51 @@
+# End-to-end smoke covering every Source method at least once.
+#
+# SPDX-License-Identifier: MIT
+
+# --- thermal ---
+thermal.get_temperature => ok_in_range -40.0..=125.0;
+let fan_min = thermal.get_min_rpm;
+let fan_max = thermal.get_max_rpm;
+thermal.get_max_rpm => ok_gt fan_min;
+thermal.get_rpm     => ok_le fan_max;
+
+let on_th = thermal.get_threshold(on);
+thermal.get_threshold(ramping) => gt on_th;
+thermal.get_threshold(max)     => gt on_th;
+
+# Threshold round-trip tolerates Celsius<->deciKelvin rounding.
+thermal.set_threshold(on, 35.0)  => is_ok;
+thermal.get_threshold(on)        => ok_in_range 34.9..35.1;
+thermal.set_threshold(on, on_th) => is_ok;
+
+let original_rpm = thermal.get_rpm;
+thermal.set_rpm(1500) => is_ok;
+sleep 200ms;
+thermal.get_rpm       => ok_le fan_max;
+thermal.set_rpm(original_rpm) => is_ok;
+
+# --- battery (BIX capacity fields are stubbed) ---
+battery.get_bix                         => is_ok;
+battery.get_bix.design_voltage          => in_range 1000..=30000;
+battery.get_bst                         => is_ok;
+battery.get_bst.battery_present_voltage => in_range 1000..=30000;
+battery.set_btp(15000)                  => is_ok;
+
+# --- rtc ---
+rtc.get_capabilities                       => is_ok;
+rtc.get_capabilities.realtime_implemented  => eq true;
+rtc.get_real_time                          => is_ok;
+rtc.get_wake_status(ac)                    => is_ok;
+rtc.get_wake_status(dc)                    => is_ok;
+
+# Timer value 0 maps to "disabled" (reports back as u32::MAX); use
+# a non-zero value for the round-trip.
+let ac_timer = rtc.get_timer_value(ac).value;
+rtc.set_timer_value(ac, 300)       => is_ok;
+rtc.get_timer_value(ac).value      => le 300;
+rtc.get_timer_value(ac).value      => gt 290;
+rtc.set_timer_value(ac, ac_timer)  => is_ok;
+
+let t0 = rtc.get_real_time.unix_timestamp;
+sleep 1500ms;
+rtc.get_real_time.unix_timestamp => gt t0;

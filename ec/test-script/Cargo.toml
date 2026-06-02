@@ -1,24 +1,24 @@
-# Cargo manifest for the ec-test-cli crate
+# Cargo manifest for the ec-test-script crate
 #
 # SPDX-License-Identifier: MIT
 #
 
 [package]
-name = "ec-test-cli"
+name = "ec-test-script"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-description = "CLI tool for EC feature testing"
+description = "Text-DSL integration test runner for ec-test-lib sources"
 repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-clap.workspace = true
-critical-section.workspace = true
 ec-test-lib = { path = "../test-lib" }
-ec-test-script = { path = "../test-script" }
 time-alarm-service-messages.workspace = true
 battery-service-messages.workspace = true
+
+[dev-dependencies]
+critical-section.workspace = true
 
 [lints]
 workspace = true

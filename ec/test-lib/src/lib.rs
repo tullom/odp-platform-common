@@ -100,6 +100,9 @@ pub trait ThermalSource: ErrorType {
     /// Get fan threshold
     fn get_threshold(&self, threshold: Threshold) -> Result<f64, Self::Error>;
 
+    /// Set fan threshold temperature (degrees C).
+    fn set_threshold(&self, threshold: Threshold, value: f64) -> Result<(), Self::Error>;
+
     /// Set fan RPM limit
     fn set_rpm(&self, rpm: f64) -> Result<(), Self::Error>;
 }
@@ -132,6 +135,22 @@ pub trait RtcSource: ErrorType {
 
     /// Get the timer value - see _TIV
     fn get_timer_value(&self, timer_id: AcpiTimerId) -> Result<AlarmTimerSeconds, Self::Error>;
+
+    /// Set the RTC real time - see _SRT
+    fn set_real_time(&self, timestamp: AcpiTimestamp) -> Result<(), Self::Error>;
+
+    /// Set the timer value (seconds until expiry) - see _STV
+    fn set_timer_value(&self, timer_id: AcpiTimerId, value: AlarmTimerSeconds) -> Result<(), Self::Error>;
+
+    /// Set the expired-timer wake policy - see _STP
+    fn set_expired_timer_wake_policy(
+        &self,
+        timer_id: AcpiTimerId,
+        policy: AlarmExpiredWakePolicy,
+    ) -> Result<(), Self::Error>;
+
+    /// Clear the wake status of the timer - see _CWS
+    fn clear_wake_status(&self, timer_id: AcpiTimerId) -> Result<(), Self::Error>;
 }
 
 /// Marker trait implemented by all EC data sources.
@@ -161,6 +180,9 @@ impl<T: ThermalSource> ThermalSource for Arc<T> {
     }
     fn get_threshold(&self, threshold: Threshold) -> Result<f64, Self::Error> {
         self.as_ref().get_threshold(threshold)
+    }
+    fn set_threshold(&self, threshold: Threshold, value: f64) -> Result<(), Self::Error> {
+        self.as_ref().set_threshold(threshold, value)
     }
     fn set_rpm(&self, rpm: f64) -> Result<(), Self::Error> {
         self.as_ref().set_rpm(rpm)
@@ -194,6 +216,22 @@ impl<T: RtcSource> RtcSource for Arc<T> {
     }
     fn get_timer_value(&self, timer_id: AcpiTimerId) -> Result<AlarmTimerSeconds, Self::Error> {
         self.as_ref().get_timer_value(timer_id)
+    }
+    fn set_real_time(&self, timestamp: AcpiTimestamp) -> Result<(), Self::Error> {
+        self.as_ref().set_real_time(timestamp)
+    }
+    fn set_timer_value(&self, timer_id: AcpiTimerId, value: AlarmTimerSeconds) -> Result<(), Self::Error> {
+        self.as_ref().set_timer_value(timer_id, value)
+    }
+    fn set_expired_timer_wake_policy(
+        &self,
+        timer_id: AcpiTimerId,
+        policy: AlarmExpiredWakePolicy,
+    ) -> Result<(), Self::Error> {
+        self.as_ref().set_expired_timer_wake_policy(timer_id, policy)
+    }
+    fn clear_wake_status(&self, timer_id: AcpiTimerId) -> Result<(), Self::Error> {
+        self.as_ref().clear_wake_status(timer_id)
     }
 }
 

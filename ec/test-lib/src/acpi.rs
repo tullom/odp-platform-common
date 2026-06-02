@@ -189,12 +189,14 @@ struct AcpiMethodInput<'a, 'b> {
 }
 
 /// A user-friendly ACPI method argument
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub(crate) enum AcpiMethodArgument {
     /// Arbitrary u32 integer (DWORD)
     Int(u32),
     /// GUID in mixed-endian format
     Guid(uuid::Bytes),
+    /// Arbitrary-length byte buffer
+    Buffer(Vec<u8>),
 }
 
 #[derive(Debug, Default)]
@@ -211,16 +213,22 @@ impl TryFrom<AcpiMethodArgument> for AcpiMethodArgumentV1 {
     fn try_from(arg: AcpiMethodArgument) -> Result<Self, AcpiParseError> {
         Ok(match arg {
             AcpiMethodArgument::Guid(g) => Self {
-                type_: 2,
+                type_: AcpiArgumentType::Buffer as u16,
                 data_length: 16,
                 data_32: 0,
                 data: g.to_vec(),
             },
             AcpiMethodArgument::Int(i) => Self {
-                type_: 0,
+                type_: AcpiArgumentType::Integer as u16,
                 data_length: 4,
                 data_32: i,
                 data: i.to_le_bytes().to_vec(),
+            },
+            AcpiMethodArgument::Buffer(b) => Self {
+                type_: AcpiArgumentType::Buffer as u16,
+                data_length: u16::try_from(b.len()).map_err(|_| AcpiParseError::InvalidFormat)?,
+                data_32: 0,
+                data: b,
             },
         })
     }
@@ -263,7 +271,7 @@ impl TryFrom<AcpiMethodInput<'_, '_>> for AcpiEvalInputBufferComplexV1Ex {
 
         let arguments = if let Some(args) = method.args {
             args.iter()
-                .map(|&arg| AcpiMethodArgumentV1::try_from(arg))
+                .map(|arg| AcpiMethodArgumentV1::try_from(arg.clone()))
                 .collect::<Result<Vec<_>, _>>()?
         } else {
             Vec::default()
@@ -536,6 +544,16 @@ impl ThermalSource for Acpi {
         }
     }
 
+    fn set_threshold(&self, threshold: Threshold, value: f64) -> Result<(), Self::Error> {
+        let guid = match threshold {
+            Threshold::On => common::guid::FAN_ON_TEMP,
+            Threshold::Ramping => common::guid::FAN_RAMP_TEMP,
+            Threshold::Max => common::guid::FAN_MAX_TEMP,
+        };
+        // acpi_set_var truncates via `as u32`; pass deciKelvin as f64.
+        self.acpi_set_var(guid, common::c_to_dk(value) as f64)
+    }
+
     fn set_rpm(&self, rpm: f64) -> Result<(), Self::Error> {
         self.acpi_set_var(common::guid::FAN_CURRENT_RPM, rpm)
     }
@@ -636,5 +654,42 @@ impl RtcSource for Acpi {
             "\\_SB.ECT0._TIV",
             Some(&[AcpiMethodArgument::Int(timer_id.into())]),
         )?))
+    }
+
+    fn set_real_time(&self, timestamp: AcpiTimestamp) -> Result<(), Self::Error> {
+        let bytes = timestamp.as_bytes();
+        let _ = self.evaluate("\\_SB.ECT0._SRT", Some(&[AcpiMethodArgument::Buffer(bytes.to_vec())]))?;
+        Ok(())
+    }
+
+    fn set_timer_value(&self, timer_id: AcpiTimerId, value: AlarmTimerSeconds) -> Result<(), Self::Error> {
+        let _ = self.evaluate(
+            "\\_SB.ECT0._STV",
+            Some(&[
+                AcpiMethodArgument::Int(timer_id.into()),
+                AcpiMethodArgument::Int(value.0),
+            ]),
+        )?;
+        Ok(())
+    }
+
+    fn set_expired_timer_wake_policy(
+        &self,
+        timer_id: AcpiTimerId,
+        policy: AlarmExpiredWakePolicy,
+    ) -> Result<(), Self::Error> {
+        let _ = self.evaluate(
+            "\\_SB.ECT0._STP",
+            Some(&[
+                AcpiMethodArgument::Int(timer_id.into()),
+                AcpiMethodArgument::Int(policy.0),
+            ]),
+        )?;
+        Ok(())
+    }
+
+    fn clear_wake_status(&self, timer_id: AcpiTimerId) -> Result<(), Self::Error> {
+        let _ = self.evaluate("\\_SB.ECT0._CWS", Some(&[AcpiMethodArgument::Int(timer_id.into())]))?;
+        Ok(())
     }
 }

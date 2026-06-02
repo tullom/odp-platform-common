@@ -100,7 +100,7 @@ jobs:
       matrix:
         # Get early warning of new lints which are regularly introduced in beta channels.
         toolchain: [stable, beta]
-        crate: [ec-test-cli, ec-test-lib, ec-test-tui]
+        crate: [ec-test-cli, ec-test-lib, ec-test-script, ec-test-tui]
         os: [ubuntu-latest, windows-latest]
 
     steps:
@@ -159,4 +159,27 @@ jobs:
         uses: taiki-e/install-action@cargo-machete
       - name: cargo machete
         run: cargo machete
+        working-directory: ec
+
+  test-script:
+    # Run the ec-test-script unit tests (parser) and Mock smoke tests
+    # (every bundled .test file parses and executes against the in-process
+    # Mock source).
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.os }} / stable / test-script
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install system dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: cargo test -p ec-test-script
+        run: cargo test -p ec-test-script --locked
         working-directory: ec

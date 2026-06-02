@@ -13,3 +13,16 @@ pub(crate) mod guid {
 pub(crate) const fn dk_to_c(dk: u32) -> f64 {
     (dk as f64 / 10.0) - 273.15
 }
+
+/// Convert degrees Celsius to deciKelvin (rounded to nearest, saturating
+/// at the `u32` range).
+pub(crate) fn c_to_dk(c: f64) -> u32 {
+    let dk = (c + 273.15) * 10.0;
+    if !dk.is_finite() || dk <= 0.0 {
+        0
+    } else if dk >= u32::MAX as f64 {
+        u32::MAX
+    } else {
+        dk.round() as u32
+    }
+}

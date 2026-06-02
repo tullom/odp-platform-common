@@ -1,0 +1,32 @@
+# DSL feature tour: projections, bitfields, let, variable operands.
+#
+# SPDX-License-Identifier: MIT
+
+# Field projection into BST/BIX.
+battery.get_bst.battery_present_voltage => in_range 1000..=30000;
+battery.get_bst.battery_present_rate    => le 50000;
+battery.get_bix.design_voltage          => in_range 1000..=30000;
+
+# Bitfield accessor: parens optional.
+rtc.get_capabilities.realtime_implemented   => eq true;
+rtc.get_capabilities.realtime_implemented() => eq true;
+
+# Tuple-struct accessors: `.value` and `.0` are aliases.
+rtc.get_timer_value(ac).value               => ge 0;
+rtc.get_timer_value(ac).0                   => ge 0;
+rtc.get_expired_timer_wake_policy(ac).value => ge 0;
+
+# Nested projection.
+rtc.get_real_time.datetime.unix_timestamp => gt 0;
+rtc.get_real_time.unix_timestamp          => gt 0;
+
+# let + variable operand.
+let on_th = thermal.get_threshold(on);
+thermal.get_threshold(ramping) => gt on_th;
+thermal.get_threshold(max)     => gt on_th;
+thermal.get_threshold(on)      => eq on_th;
+
+# Snapshot + sleep + monotonicity.
+let t0 = rtc.get_real_time.unix_timestamp;
+sleep 1500ms;
+rtc.get_real_time.unix_timestamp => gt t0;

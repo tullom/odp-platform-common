@@ -318,6 +318,15 @@ impl ThermalSource for Serial {
         Ok(common::dk_to_c(raw as u32))
     }
 
+    fn set_threshold(&self, threshold: Threshold, value: f64) -> Result<(), Self::Error> {
+        let guid = match threshold {
+            Threshold::On => common::guid::FAN_ON_TEMP,
+            Threshold::Ramping => common::guid::FAN_RAMP_TEMP,
+            Threshold::Max => common::guid::FAN_MAX_TEMP,
+        };
+        self.thermal_set_var(guid, common::c_to_dk(value))
+    }
+
     fn set_rpm(&self, rpm: f64) -> Result<(), Self::Error> {
         self.thermal_set_var(common::guid::FAN_CURRENT_RPM, rpm as u32)
     }
@@ -416,6 +425,52 @@ impl RtcSource for Serial {
 
         if let AcpiTimeAlarmResponse::TimerSeconds(seconds) = response {
             Ok(seconds)
+        } else {
+            Err(Error::UnexpectedResponse)
+        }
+    }
+
+    fn set_real_time(&self, timestamp: AcpiTimestamp) -> Result<(), Self::Error> {
+        let response = self.send(Destination::TimeAlarm, AcpiTimeAlarmRequest::SetRealTime(timestamp))?;
+        if matches!(response, AcpiTimeAlarmResponse::OkNoData) {
+            Ok(())
+        } else {
+            Err(Error::UnexpectedResponse)
+        }
+    }
+
+    fn set_timer_value(&self, timer_id: AcpiTimerId, value: AlarmTimerSeconds) -> Result<(), Self::Error> {
+        let response = self.send(
+            Destination::TimeAlarm,
+            AcpiTimeAlarmRequest::SetTimerValue(timer_id, value),
+        )?;
+        if matches!(response, AcpiTimeAlarmResponse::OkNoData) {
+            Ok(())
+        } else {
+            Err(Error::UnexpectedResponse)
+        }
+    }
+
+    fn set_expired_timer_wake_policy(
+        &self,
+        timer_id: AcpiTimerId,
+        policy: AlarmExpiredWakePolicy,
+    ) -> Result<(), Self::Error> {
+        let response = self.send(
+            Destination::TimeAlarm,
+            AcpiTimeAlarmRequest::SetExpiredTimerPolicy(timer_id, policy),
+        )?;
+        if matches!(response, AcpiTimeAlarmResponse::OkNoData) {
+            Ok(())
+        } else {
+            Err(Error::UnexpectedResponse)
+        }
+    }
+
+    fn clear_wake_status(&self, timer_id: AcpiTimerId) -> Result<(), Self::Error> {
+        let response = self.send(Destination::TimeAlarm, AcpiTimeAlarmRequest::ClearWakeStatus(timer_id))?;
+        if matches!(response, AcpiTimeAlarmResponse::OkNoData) {
+            Ok(())
         } else {
             Err(Error::UnexpectedResponse)
         }

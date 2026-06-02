@@ -1,0 +1,65 @@
+# Time-alarm / RTC service: real-hardware invariants.
+#
+# Quirks:
+# * `set_real_time` is on the trait but not in the DSL (no operand
+#   syntax for AcpiTimestamp). Drive from Rust if needed.
+# * The device treats timer value 0 as "disabled" and reports it back
+#   as u32::MAX, so the 0 round-trip only checks the write succeeds.
+#
+# SPDX-License-Identifier: MIT
+
+# Clock ticks monotonically.
+rtc.get_real_time => is_ok;
+let t0 = rtc.get_real_time.unix_timestamp;
+sleep 1500ms;
+rtc.get_real_time.unix_timestamp          => gt t0;
+rtc.get_real_time.datetime.unix_timestamp => ge t0;
+
+rtc.get_capabilities                       => is_ok;
+rtc.get_capabilities.realtime_implemented  => eq true;
+
+# set_expired_timer_wake_policy round-trip (AC, DC). NEVER = u32::MAX.
+let ac_policy = rtc.get_expired_timer_wake_policy(ac).value;
+let dc_policy = rtc.get_expired_timer_wake_policy(dc).value;
+
+rtc.set_expired_timer_wake_policy(ac, 0)          => is_ok;
+rtc.get_expired_timer_wake_policy(ac).value       => eq 0;
+rtc.set_expired_timer_wake_policy(ac, 4294967295) => is_ok;
+rtc.get_expired_timer_wake_policy(ac).value       => eq 4294967295;
+rtc.set_expired_timer_wake_policy(ac, ac_policy)  => is_ok;
+rtc.get_expired_timer_wake_policy(ac).value       => eq ac_policy;
+
+rtc.set_expired_timer_wake_policy(dc, 0)          => is_ok;
+rtc.get_expired_timer_wake_policy(dc).value       => eq 0;
+rtc.set_expired_timer_wake_policy(dc, dc_policy)  => is_ok;
+rtc.get_expired_timer_wake_policy(dc).value       => eq dc_policy;
+
+# set_timer_value round-trip.
+let ac_timer = rtc.get_timer_value(ac).value;
+let dc_timer = rtc.get_timer_value(dc).value;
+
+rtc.set_timer_value(ac, 0) => is_ok;
+rtc.set_timer_value(dc, 0) => is_ok;
+
+# Non-zero: allow small downward drift across the read.
+rtc.set_timer_value(ac, 600)  => is_ok;
+rtc.get_timer_value(ac).value => le 600;
+rtc.get_timer_value(ac).value => gt 590;
+
+# AC and DC are independent.
+rtc.set_timer_value(dc, 300)  => is_ok;
+rtc.get_timer_value(dc).value => le 300;
+rtc.get_timer_value(dc).value => gt 290;
+rtc.get_timer_value(ac).value => le 600;
+rtc.get_timer_value(ac).value => gt 580;
+
+rtc.set_timer_value(ac, ac_timer) => is_ok;
+rtc.set_timer_value(dc, dc_timer) => is_ok;
+
+# Wake-status: cleared bits stay clear.
+rtc.clear_wake_status(ac) => is_ok;
+rtc.clear_wake_status(dc) => is_ok;
+rtc.get_wake_status(ac).timer_expired        => eq false;
+rtc.get_wake_status(ac).timer_triggered_wake => eq false;
+rtc.get_wake_status(dc).timer_expired        => eq false;
+rtc.get_wake_status(dc).timer_triggered_wake => eq false;
